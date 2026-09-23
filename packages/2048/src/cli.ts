@@ -24,11 +24,13 @@ if (gameIndex) await access(gameIndex);
 const gameUrl = gameIndex ? pathToFileURL(gameIndex).href : "https://classic.play2048.co/";
 const toolDrafts = resolve(".gamebot", "games", "2048", "tools");
 await mkdir(toolDrafts, { recursive: true });
-const steps = Number(argument("steps") ?? 100);
-const target = Number(argument("target") ?? 128);
+const stepLimit = argument("steps");
+const steps = stepLimit === undefined ? undefined : Number(stepLimit);
+const target = Number(argument("target") ?? 2048);
 const seed = Number(argument("seed") ?? 1);
-if (![steps, target, seed].every(Number.isSafeInteger) || steps < 1 || target < 2) {
-  throw new Error("--steps, --target and --seed must be valid positive integers");
+if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
+    !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed)) {
+  throw new Error("--steps (if provided) and --target must be positive integers; --seed must be an integer");
 }
 const headless = process.argv.includes("--headless");
 const useAi = process.argv.includes("--ai");
@@ -176,17 +178,29 @@ try {
 
   console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; target ${target}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
   let finalState = (await game.observe()).state;
+  let moves = 0;
+  let stopReason = "no-action";
   try {
-    for (let step = 0; step < steps && !stop; step++) {
+    for (let step = 0; (steps === undefined || step < steps) && !stop; step++) {
       if (finalState.over || finalState.won || Math.max(...finalState.board.flat()) >= target) break;
       const result = await session.step();
       finalState = (result.after ?? await game.observe()).state;
       if (!result.candidate) break;
+      moves++;
       console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
-      if (observer === "vision" && result.verification?.status !== "success") break;
+      if (observer === "vision" && result.verification?.status !== "success") {
+        stopReason = "unverified";
+        break;
+      }
       await delay(200);
     }
   } finally { await session.finish(); }
+  const maxTile = Math.max(...finalState.board.flat());
+  if (stop) stopReason = "interrupted";
+  else if (finalState.won) stopReason = "won";
+  else if (finalState.over) stopReason = "game-over";
+  else if (maxTile >= target) stopReason = "target-reached";
+  else if (stopReason === "no-action" && steps !== undefined && moves >= steps) stopReason = "step-limit";
   const screenshotPath = headless ? resolve(".gamebot", "screenshots", `2048-${seed}-${runId}.png`) : undefined;
   if (screenshotPath) {
     await delay(500);
@@ -195,9 +209,10 @@ try {
   }
   console.log(JSON.stringify({
     score: finalState.score,
-    maxTile: Math.max(...finalState.board.flat()),
-    reachedTarget: Math.max(...finalState.board.flat()) >= target,
+    maxTile,
+    reachedTarget: maxTile >= target,
     over: finalState.over,
+    stopReason,
     tracePath: trace.path,
     toolDrafts,
     ...(visionModel ? { visionUsage } : {}),
