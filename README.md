@@ -21,6 +21,8 @@ npm run snake -- --ai
 
 The bridge packages are [`@gamebot/chess`](packages/chess) and [`@gamebot/snake`](packages/snake). Each has its own dependencies, build, executable, and adapter. Runs write traces under `.gamebot/traces/` in the current working directory. The root package `@gamebot/core` has no chess or Snake dependency. These packages are available locally through npm workspaces; they have not been published to a registry.
 
+Each bridge runner creates a writable `.gamebot/games/<game>/tools/` area for game-scoped tool drafts and prints its path. Drafts are not loaded or run automatically; reviewed implementations belong in that bridge's `tools/` source directory and require explicit registration.
+
 To run the same demo through actual models, set an [AI Gateway](https://ai-sdk.dev/docs/getting-started/choosing-a-provider) key and a current model ID, then run `npm run watch:ai`:
 
 ```sh

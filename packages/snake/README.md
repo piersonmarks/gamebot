@@ -10,3 +10,5 @@ npm run snake -- --seed=42
 ```
 
 Add `--ai` and set `GAMEBOT_REFLEX_MODEL` or `GAMEBOT_MODEL` to use a model instead of the deterministic safe-distance heuristic. The score is food eaten divided by five; an episode ends on collision or reaching the food target. The executable is `gamebot-snake` when this package is installed.
+
+The runner creates a writable `.gamebot/games/snake/tools/` directory in the current working directory for agent-authored drafts. The package's [`tools/`](tools) directory is reserved for reviewed game-specific implementations. A draft may analyze Snake state or propose a direction, but it does not become callable merely by being placed there; the bridge must register it explicitly.

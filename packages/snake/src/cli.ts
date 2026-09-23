@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { FileTraceSink, SessionRuntime, evaluate, aiSdkReflex, type EvaluationConfiguration } from "@gamebot/core";
 import { SnakeGame, foodDistance, legalDirections, wouldCollide, type Direction, type SnakeState } from "./game.js";
 
 const watch = process.argv.includes("--watch");
 const useAi = process.argv.includes("--ai");
+const toolDrafts = resolve(".gamebot", "games", "snake", "tools");
+await mkdir(toolDrafts, { recursive: true });
 const seed = Number(process.argv.find(arg => arg.startsWith("--seed="))?.slice(7) ?? 1);
 if (!Number.isSafeInteger(seed)) throw new Error("--seed must be an integer");
 const model = useAi ? process.env.GAMEBOT_REFLEX_MODEL ?? process.env.GAMEBOT_MODEL : undefined;
@@ -83,4 +86,4 @@ const configuration: EvaluationConfiguration = {
 
 if (watch) console.log(`Gamebot Snake: @ head, o body, * food.\n${(await new SnakeGame(seed).observe()).state.board}\n`);
 const [result] = await evaluate([configuration], [seed], 100);
-console.log(JSON.stringify({ result, status: lastGame!.status() }, null, 2));
+console.log(JSON.stringify({ result, status: lastGame!.status(), toolDrafts }, null, 2));
