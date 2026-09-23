@@ -16,6 +16,7 @@
   "scripts": {
     "build": "npm run build:core && npm run build --workspaces",
     "build:core": "tsc -p tsconfig.json",
+    "game": "node scripts/game.mjs",
     "demo": "node dist/demo.js",
     "watch": "npm run build && node dist/demo.js --watch",
     "watch:ai": "npm run build && node dist/demo.js --watch --ai",

@@ -6,7 +6,7 @@ Install Gamebot's dependencies, then run the demo:
 
 ```sh
 npm install
-npm run 2048
+npm run game -- --game=2048
 ```
 
 On first run, the bridge downloads a pinned copy of the original game into your user cache and installs Playwright's Chromium if needed. Neither is bundled into Gamebot. You can use an existing game checkout instead with `--game-dir=/path/to/2048` or `GAMEBOT_2048_DIR`.
