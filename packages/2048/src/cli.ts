@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve, join, dirname, delimiter } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,34 +17,10 @@ function argument(name: string): string | undefined {
 }
 
 const run = promisify(execFile);
-const gameRevision = "478b6ec346e3787f589e4af751378d06ded4cbbc";
-
-async function defaultGameIndex(): Promise<string> {
-  const cacheRoot = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
-  const cacheParent = join(cacheRoot, "gamebot", "2048");
-  const gamePath = join(cacheParent, gameRevision);
-  const index = join(gamePath, "index.html");
-  if (await access(index).then(() => true, () => false)) return index;
-
-  await mkdir(cacheParent, { recursive: true });
-  const downloadPath = await mkdtemp(join(cacheParent, ".download-"));
-  console.log("Downloading the original 2048 game to the Gamebot cache...");
-  try {
-    await run("git", ["init", "-q", downloadPath]);
-    await run("git", ["-C", downloadPath, "remote", "add", "origin", "https://github.com/gabrielecirulli/2048.git"]);
-    await run("git", ["-C", downloadPath, "fetch", "-q", "--depth=1", "origin", gameRevision]);
-    await run("git", ["-C", downloadPath, "checkout", "-q", "--detach", "FETCH_HEAD"]);
-    await rename(downloadPath, gamePath);
-  } finally {
-    await rm(downloadPath, { recursive: true, force: true });
-  }
-  await access(index);
-  return index;
-}
-
 const gameDir = argument("game-dir") ?? process.env.GAMEBOT_2048_DIR;
-const gameIndex = gameDir ? join(resolve(gameDir), "index.html") : await defaultGameIndex();
-await access(gameIndex);
+const gameIndex = gameDir ? join(resolve(gameDir), "index.html") : undefined;
+if (gameIndex) await access(gameIndex);
+const gameUrl = gameIndex ? pathToFileURL(gameIndex).href : "https://classic.play2048.co/";
 const toolDrafts = resolve(".gamebot", "games", "2048", "tools");
 await mkdir(toolDrafts, { recursive: true });
 const steps = Number(argument("steps") ?? 100);
@@ -105,7 +81,7 @@ try {
     let randomState = initialSeed >>> 0;
     Math.random = () => ((randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0) / 0x100000000);
   }, seed);
-  await page.goto(pathToFileURL(gameIndex).href);
+  await page.goto(gameUrl);
   await page.waitForFunction(() => localStorage.getItem("gameState") !== null);
 
   const game = new Game2048(page);
