@@ -21,7 +21,8 @@
     "watch:ai": "npm run build && node dist/demo.js --watch --ai",
     "chess": "npm run build && npm run play -w @gamebot/chess -- --watch",
     "snake": "npm run build && npm run play -w @gamebot/snake -- --watch",
-    "snake:window": "npm run build && npm run play -w @gamebot/snake -- --window"
+    "snake:window": "npm run build && npm run play -w @gamebot/snake -- --window",
+    "2048": "npm run build && npm run play -w @gamebot/2048 --"
   },
   "dependencies": {
     "@types/node": "^22.20.3",
