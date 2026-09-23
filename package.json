@@ -1,10 +1,12 @@
 {
-  "name": "gamebot",
+  "name": "@gamebot/core",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["packages/*"],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": ["dist/core", "dist/eval", "dist/memory", "dist/models", "dist/skills", "dist/index.*", "README.md"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -12,10 +14,13 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:core && npm run build --workspaces",
+    "build:core": "tsc -p tsconfig.json",
     "demo": "node dist/demo.js",
     "watch": "npm run build && node dist/demo.js --watch",
-    "watch:ai": "npm run build && node dist/demo.js --watch --ai"
+    "watch:ai": "npm run build && node dist/demo.js --watch --ai",
+    "chess": "npm run build && npm run play -w @gamebot/chess -- --watch",
+    "snake": "npm run build && npm run play -w @gamebot/snake -- --watch"
   },
   "dependencies": {
     "@types/node": "^22.20.3",

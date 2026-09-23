@@ -50,4 +50,6 @@ The model seam now uses Vercel AI SDK. The runtime receives a reflex or reasoner
 
 The demo selects relevant Agent Skills instructions for each model wake and includes them in the prompt. Selection remains separate from executable registration. Evaluation settles background reasoning and trace writes before reading final metrics; reaching a game goal still advances an active skill to its terminal outcome when the step budget permits.
 
-The first real adapter and provider selection are still open integration work. They should be chosen from verified available game interfaces and model endpoints, rather than guessed from the architecture handoff. RCT2 remains in the target set.
+The first external game adapter and provider selection are still open integration work. They should be chosen from verified available game interfaces and model endpoints, rather than guessed from the architecture handoff. RCT2 remains in the target set.
+
+Chess and Snake now live in separate `@gamebot/chess` and `@gamebot/snake` workspace packages. They depend on `@gamebot/core`; neither game rule set is included in the core package. The chess bridge uses `chess.js`, while Snake supplies a small seeded local engine. These are initial integration fixtures, not evidence that a particular model or hierarchy plays either game well.
