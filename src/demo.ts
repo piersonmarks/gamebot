@@ -74,7 +74,13 @@ const strategist: Reasoner<World, number> = {
   },
 };
 
-function configuration(name: string, useTactician: boolean, useStrategist: boolean): EvaluationConfiguration {
+function board(position: number): string {
+  const cells = ["S", "·", "█", "·", "≈", "G"];
+  cells[position] = "●";
+  return cells.join(" ");
+}
+
+function configuration(name: string, useTactician: boolean, useStrategist: boolean, watch = false): EvaluationConfiguration {
   return {
     name,
     create(seed, record) {
@@ -150,11 +156,35 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
         trace: {
           async record(event) {
             record(event);
+            if (watch && event.type === "decision") {
+              console.log(`Action: ${(event.detail as { candidateId: string }).candidateId}`);
+            }
+            if (watch && event.type === "proposal.activated") {
+              const change = event.detail as { role: string; directive: { instruction: string } };
+              console.log(`${change.role} changes directive: ${change.directive.instruction}`);
+            }
+            if (watch && event.type === "verification") {
+              console.log(`Outcome: ${(event.detail as { status: string }).status}`);
+            }
             await traceSink.record(event);
           },
         },
       }, { id: "finish-path", description: "Reach position five" });
-      return { step: async () => { await runtime.step(); }, outcome: () => game.outcome(), tracePath: traceSink.path };
+      if (watch) {
+        console.log("Path game: reach G. █ is a wall; ≈ is a gap; ● is the agent.\n");
+        console.log(board(0));
+      }
+      return {
+        step: async () => {
+          await runtime.step();
+          if (watch) {
+            console.log(board((await game.observe()).state.position), "\n");
+            await new Promise(resolve => setTimeout(resolve, 650));
+          }
+        },
+        outcome: () => game.outcome(),
+        tracePath: traceSink.path,
+      };
     },
   };
 }
@@ -163,9 +193,13 @@ const catalog = await SkillCatalog.discover(new URL("../examples/skills", import
 const availableSkills = await selectSkillSummaries(catalog, {
   select(_context, available) { return available.map(skill => skill.name); },
 }, {});
-const results = await evaluate([
-  configuration("reflex", false, false),
-  configuration("reflex+tactician", true, false),
-  configuration("full-hierarchy", true, true),
-], [1], 12);
-console.log(JSON.stringify({ availableSkills, results }, null, 2));
+const watch = process.argv.includes("--watch");
+const configurations = watch
+  ? [configuration("full-hierarchy", true, true, true)]
+  : [
+      configuration("reflex", false, false),
+      configuration("reflex+tactician", true, false),
+      configuration("full-hierarchy", true, true),
+    ];
+const results = await evaluate(configurations, [1], 12);
+console.log(JSON.stringify(watch ? { result: results[0] } : { availableSkills, results }, null, 2));
