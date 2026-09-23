@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve, join, dirname } from "node:path";
+import { resolve, join, dirname, delimiter } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -61,16 +62,40 @@ const browserOptions = {
   headless,
   ...(process.env.GAMEBOT_CHROME ? { executablePath: process.env.GAMEBOT_CHROME } : {}),
 };
+const browserMissing = (error: unknown) =>
+  String(error).includes("Executable doesn't exist") || String(error).includes("is not found at");
 let browser;
 try {
   browser = await chromium.launch(browserOptions);
 } catch (error) {
-  if (process.env.GAMEBOT_CHROME || !String(error).includes("Executable doesn't exist")) throw error;
-  console.log("Installing Chromium for the 2048 window...");
-  await run(process.platform === "win32" ? "npx.cmd" : "npx", ["playwright", "install", "chromium"], {
-    shell: process.platform === "win32",
-  });
-  browser = await chromium.launch(browserOptions);
+  if (process.env.GAMEBOT_CHROME || !browserMissing(error)) throw error;
+  for (const channel of ["chrome", "msedge"] as const) {
+    try {
+      browser = await chromium.launch({ headless, channel });
+      console.log(`Using installed ${channel === "chrome" ? "Google Chrome" : "Microsoft Edge"}.`);
+      break;
+    } catch (channelError) {
+      if (!browserMissing(channelError)) throw channelError;
+    }
+  }
+  if (!browser) {
+    const candidates = process.platform === "darwin"
+      ? ["/Applications/Chromium.app/Contents/MacOS/Chromium", join(homedir(), "Applications/Chromium.app/Contents/MacOS/Chromium")]
+      : (process.env.PATH ?? "").split(delimiter).filter(Boolean).flatMap(dir => ["chromium", "chromium-browser"].map(name => join(dir, name)));
+    for (const candidate of candidates) {
+      if (!await access(candidate, constants.X_OK).then(() => true, () => false)) continue;
+      browser = await chromium.launch({ headless, executablePath: candidate });
+      console.log(`Using installed Chromium at ${candidate}.`);
+      break;
+    }
+  }
+  if (!browser) {
+    console.log("Installing Playwright Chromium because no installed Chrome or Chromium was found...");
+    await run(process.platform === "win32" ? "npx.cmd" : "npx", ["playwright", "install", "chromium"], {
+      shell: process.platform === "win32",
+    });
+    browser = await chromium.launch(browserOptions);
+  }
 }
 let stop = false;
 process.once("SIGINT", () => { stop = true; });
