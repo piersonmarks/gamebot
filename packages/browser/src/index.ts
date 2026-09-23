@@ -18,7 +18,7 @@ export interface BrowserPage {
 
 export interface BrowserState<GameState = unknown> {
   url: string;
-  screenshot: Buffer;
+  screenshot?: Buffer;
   viewport: { width: number; height: number } | null;
   text?: string;
   game?: GameState;
@@ -30,6 +30,8 @@ export type BrowserAction =
   | { type: "click"; selector: string };
 
 export interface BrowserBridgeOptions<GameState = unknown> {
+  /** Capture pixels only when a game-specific observation needs them. */
+  captureScreenshot?: boolean;
   /** A DOM region for text-based games; canvas games can rely on screenshots. */
   textSelector?: string;
   /** Focus a canvas or other element before keyboard actions. */
@@ -42,17 +44,25 @@ export interface BrowserBridgeOptions<GameState = unknown> {
 export class BrowserGameBridge<GameState = unknown> implements GameAdapter<BrowserState<GameState>, BrowserAction> {
   private readonly origin: string;
   constructor(private readonly page: BrowserPage, private readonly options: BrowserBridgeOptions<GameState> = {}) {
+    if (!options.captureScreenshot && !options.textSelector && !options.extractState) {
+      throw new Error("Configure a browser game observation source");
+    }
     this.origin = new URL(page.url()).origin;
   }
 
   async observe(): Promise<Observation<BrowserState<GameState>>> {
-    const screenshot = await this.page.screenshot({ type: "png" });
+    const screenshot = this.options.captureScreenshot ? await this.page.screenshot({ type: "png" }) : undefined;
     const state: BrowserState<GameState> = {
-      url: this.page.url(), screenshot, viewport: this.page.viewportSize(),
+      url: this.page.url(), viewport: this.page.viewportSize(),
+      ...(screenshot ? { screenshot } : {}),
       ...(this.options.textSelector ? { text: await this.page.locator(this.options.textSelector).innerText() } : {}),
       ...(this.options.extractState ? { game: await this.options.extractState() } : {}),
     };
-    return { state, revision: createHash("sha256").update(screenshot).digest("hex"), time: { wallMs: Date.now() } };
+    return {
+      state,
+      ...(screenshot ? { revision: createHash("sha256").update(screenshot).digest("hex") } : {}),
+      time: { wallMs: Date.now() },
+    };
   }
 
   validateAction(action: BrowserAction, observation: Observation<BrowserState<GameState>>): boolean {
