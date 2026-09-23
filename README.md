@@ -29,7 +29,7 @@ npm run game -- --game=2048
 
 The bridge opens [Classic 2048](https://classic.play2048.co/) directly, so no game download is needed. It reuses an installed Chrome or Chromium when Playwright's own browser is absent, downloading Chromium only if it cannot find one. Use `--game-dir=/path/to/2048` for an existing checkout when you want to play offline.
 
-The default run plays until 2048 or game over; pass `--steps=100` or `--target=128` when you want a shorter experiment. The final output reports why it stopped.
+The default run plays until 2048 or game over; pass `--turns=100` (or `--steps=100`) or `--target=128` when you want a shorter experiment. Ctrl+C interrupts a run. Add `--verbose` to see candidate moves, how the heuristic or AI reflex selected one, verification, and runtime events. The final output reports why it stopped.
 
 For a vision experiment, set `AI_GATEWAY_API_KEY` and run `npm run game -- --game=2048 --observe=vision --steps=10`. This sends browser screenshots to a vision-capable AI Gateway model, defaulting to Gemini, and validates the returned board state. Set `GAMEBOT_VISION_MODEL` to compare another model. The usual run reads structured state from the page without model calls.
 
