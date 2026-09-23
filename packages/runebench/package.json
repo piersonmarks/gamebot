@@ -1,0 +1,12 @@
+{
+  "name": "@gamebot/runebench",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": { "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json" },
+  "peerDependencies": { "@gamebot/core": "^0.1.0" },
+  "devDependencies": { "@gamebot/core": "file:../..", "@types/node": "^22.20.3", "typescript": "^5.9.3" }
+}

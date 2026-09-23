@@ -1,6 +1,6 @@
 # Gamebot
 
-Gamebot is an early TypeScript runtime for comparing ways to play games with fast decisions, optional slower reasoning, and executable skills. The first runnable slice uses a small local path game; it does not yet control RCT2 or any other real game.
+Gamebot is an early TypeScript runtime for comparing ways to play games with fast decisions, optional slower reasoning, and executable skills. Local path, Chess, and Snake games are runnable in this workspace. External-game bridges require their games to be installed and running separately.
 
 ## Run the slice
 
@@ -17,9 +17,10 @@ Chess and Snake are separate installable workspace bridges, not part of the core
 ```sh
 npm run chess -- --seed=42
 npm run snake -- --ai
+npm run snake:window
 ```
 
-The bridge packages are [`@gamebot/chess`](packages/chess) and [`@gamebot/snake`](packages/snake). Each has its own dependencies, build, executable, and adapter. Runs write traces under `.gamebot/traces/` in the current working directory. The root package `@gamebot/core` has no chess or Snake dependency. These packages are available locally through npm workspaces; they have not been published to a registry.
+The bridge packages are [`@gamebot/chess`](packages/chess), [`@gamebot/snake`](packages/snake), [`@gamebot/openrct2`](packages/openrct2), and [`@gamebot/runebench`](packages/runebench). Snake's `--window` option serves a read-only local browser viewer and keeps the final board visible until Ctrl+C. OpenRCT2 connects to the separately installed openrct2-bridge plugin; RuneBench accepts the SDK and bot supplied by a separate rs-sdk checkout. The external-game packages have not been exercised against live games in this workspace. Runs write traces under `.gamebot/traces/` in the current working directory. The root package `@gamebot/core` has no game dependency. These packages are available locally through npm workspaces; they have not been published to a registry.
 
 Each bridge runner creates a writable `.gamebot/games/<game>/tools/` area for game-scoped tool drafts and prints its path. Drafts are not loaded or run automatically; reviewed implementations belong in that bridge's `tools/` source directory and require explicit registration.
 
@@ -43,7 +44,7 @@ The demo runs the same deterministic environment with reflex only, reflex plus t
 - [`src/eval`](src/eval/harness.ts) runs configurations on fresh sessions, waits for a terminal skill outcome after a game goal is reached, settles background work, then reports gameplay and reasoning metrics.
 - [`src/models`](src/models/ai-sdk.ts) adapts Vercel AI SDK `generateText` to the reflex and reasoning interfaces. Model selection is supplied at session setup as a Gateway ID or any AI SDK language model. Game integrations choose what context to send. Structured output is validated, candidate IDs are checked, cancellation reaches the provider, and token use and latency are reported through a callback.
 
-The demo in [`src/demo.ts`](src/demo.ts) shows how a game integration supplies observations, candidate generation, action validation, verification, signals, and optional reasoners. The separate chess and Snake bridges use the same runtime and evaluation harness. [`examples/skills`](examples/skills) contains example Agent Skills packages. The core package surface is exported from [`src/index.ts`](src/index.ts).
+The demo in [`src/demo.ts`](src/demo.ts) shows how a game integration supplies observations, candidate generation, action validation, verification, signals, and optional reasoners. The separate chess and Snake bridges use the same runtime and evaluation harness; the external-game packages provide initial adapters and connection smoke paths. [`examples/skills`](examples/skills) contains example Agent Skills packages. The core package surface is exported from [`src/index.ts`](src/index.ts).
 
 ## Current contracts
 
@@ -53,7 +54,7 @@ Skill instruction loading, skill selection, and executable registration are sepa
 
 ## Next milestones
 
-1. Add a richer real-time adapter and then an OpenRCT2 bridge. RCT2 is in the target set, with integration feasibility to assess before committing to an approach.
+1. Exercise the OpenRCT2 and RuneBench bridges against live game instances, then add game-specific tasks, candidate generation, verification, and evaluation runs. RCT2 remains in the target set.
 2. Extend the AI SDK adapter with bounded, role-specific tools and dollar cost reporting. Preserve the same coordinator interface for local and remote providers.
 3. Wire run-end episode recording and evidence-based consolidation into the session lifecycle. Keep research runs pinned to a selected memory snapshot.
 4. Use the evaluation harness for matched runs across architectures, with game-specific success metrics and shared cost/latency reporting.

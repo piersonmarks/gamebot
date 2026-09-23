@@ -4,8 +4,12 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { FileTraceSink, SessionRuntime, evaluate, aiSdkReflex, type EvaluationConfiguration } from "@gamebot/core";
 import { SnakeGame, foodDistance, legalDirections, wouldCollide, type Direction, type SnakeState } from "./game.js";
+import { startViewer } from "./viewer.js";
 
 const watch = process.argv.includes("--watch");
+const windowed = process.argv.includes("--window");
+const viewer = windowed ? await startViewer() : undefined;
+if (viewer) console.log(`Open ${viewer.url} to watch Gamebot play Snake. Press Ctrl+C when finished.`);
 const useAi = process.argv.includes("--ai");
 const toolDrafts = resolve(".gamebot", "games", "snake", "tools");
 await mkdir(toolDrafts, { recursive: true });
@@ -21,6 +25,7 @@ const configuration: EvaluationConfiguration = {
   create(seed, record) {
     const game = new SnakeGame(seed);
     lastGame = game;
+    if (viewer) void game.observe().then(observation => viewer.publish(observation.state));
     const traceSink = new FileTraceSink(resolve(".gamebot", "traces", `snake-${seed}-${randomUUID()}.jsonl`));
     const runtime = new SessionRuntime<SnakeState, Direction>({
       adapter: game,
@@ -69,12 +74,14 @@ const configuration: EvaluationConfiguration = {
     }, { id: "eat-food", description: "Eat five pieces of food without colliding" });
     return {
       async step() {
-        await runtime.step();
+        const result = await runtime.step();
+        if (viewer) viewer.publish((result.after ?? await game.observe()).state);
         if (watch) {
           const state = (await game.observe()).state;
           console.log(`Tick ${state.tick} · food ${state.foodEaten}/${game.targetFood}\n${state.board}\n`);
           await new Promise(resolve => setTimeout(resolve, 120));
         }
+        if (viewer && !watch) await new Promise(resolve => setTimeout(resolve, 120));
       },
       finish: () => runtime.finish(),
       outcome: () => game.outcome(),
@@ -87,3 +94,4 @@ const configuration: EvaluationConfiguration = {
 if (watch) console.log(`Gamebot Snake: @ head, o body, * food.\n${(await new SnakeGame(seed).observe()).state.board}\n`);
 const [result] = await evaluate([configuration], [seed], 100);
 console.log(JSON.stringify({ result, status: lastGame!.status(), toolDrafts }, null, 2));
+if (viewer) await new Promise<void>(resolve => process.once("SIGINT", resolve)).finally(() => viewer.close());
