@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { FileTraceSink, SessionRuntime, type GameAdapter, type Reasoner } from "./core/index.js";
+import { FileTraceSink, SessionRuntime, type DecisionContext, type GameAdapter, type Reasoner, type ReasoningRequest, type TraceEvent } from "./core/index.js";
 import { evaluate, type EvaluationConfiguration } from "./eval/harness.js";
 import { aiSdkReasoner, aiSdkReflex, type ModelCallReport } from "./models/index.js";
-import { SkillCatalog, SkillExecutorRegistry, selectSkillSummaries } from "./skills/index.js";
+import { SkillCatalog, SkillExecutorRegistry, selectSkillSummaries, type SkillInjector } from "./skills/index.js";
 
 interface World {
   position: number;
@@ -81,7 +81,34 @@ function board(position: number): string {
   return cells.join(" ");
 }
 
+function showWatchEvent(event: TraceEvent): void {
+  if (event.type === "decision") {
+    console.log(`Action: ${(event.detail as { candidateId: string }).candidateId}`);
+  } else if (event.type === "proposal.activated") {
+    const change = event.detail as { role: string; directive: { instruction: string } };
+    console.log(`${change.role} changes directive: ${change.directive.instruction}`);
+  } else if (event.type === "verification") {
+    console.log(`Outcome: ${(event.detail as { status: string }).status}`);
+  }
+}
+
 const useAi = process.argv.includes("--ai");
+const catalog = await SkillCatalog.discover(new URL("../examples/skills", import.meta.url).pathname);
+const skillInjector: SkillInjector<DecisionContext<World>> = {
+  select(context) {
+    const position = context.observation.state.position;
+    return position === 1 ? ["vault-wall"] : position === 3 ? ["bridge-gap"] : [];
+  },
+};
+
+async function skillGuidance(context: DecisionContext<World>) {
+  const selected = await selectSkillSummaries(catalog, skillInjector, context);
+  return Promise.all(selected.map(async summary => {
+    const document = await catalog.get(summary.name);
+    if (!document) throw new Error(`Selected skill disappeared: ${summary.name}`);
+    return { name: summary.name, description: summary.description, instructions: document.instructions };
+  }));
+}
 
 function modelFor(role: "reflex" | "tactician" | "strategist"): string {
   const model = process.env[`GAMEBOT_${role.toUpperCase()}_MODEL`] ?? process.env.GAMEBOT_MODEL;
@@ -106,7 +133,7 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
         tokens.input += report.usage.inputTokens ?? 0;
         tokens.output += report.usage.outputTokens ?? 0;
       };
-      const skills = new SkillExecutorRegistry();
+      const skills = new SkillExecutorRegistry<Action>();
       for (const [name, action] of [["vault-wall", "vault"], ["bridge-gap", "bridge"]] as const) {
         skills.register(name, {
           parseParams() { return {}; },
@@ -131,11 +158,12 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
           model: models!.reflex,
           maxOutputTokens: 96,
           timeoutMs: 15_000,
-          render(context, candidates) {
+          async render(context, candidates) {
             return JSON.stringify({
               goal: context.authority.goal,
               directive: context.authority.directive,
               position: context.observation.state.position,
+              skills: await skillGuidance(context),
               candidates: candidates.map(({ id, description }) => ({ id, description })),
             });
           },
@@ -157,27 +185,10 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
           },
         },
         executor: {
-          async execute(action, signal) {
-            if (action === "advance") return game.execute(action, signal);
+          async start(action, observation) {
+            if (action === "advance") return undefined;
             const name = action === "vault" ? "vault-wall" : "bridge-gap";
-            const run = await skills.start(name, {}, await game.observe());
-            for (;;) {
-              if (signal.aborted) {
-                await run.cancel("interrupted");
-                return;
-              }
-              const progress = await run.progress(await game.observe());
-              if (progress.status === "finished") {
-                if (progress.outcome.status !== "succeeded") throw new Error(progress.outcome.reason);
-                return;
-              }
-              if (progress.action !== undefined) {
-                const current = await game.observe();
-                const primitive = progress.action as Action;
-                if (!(await game.validateAction(primitive, current))) throw new Error("Skill action is no longer valid");
-                await game.execute(primitive, signal);
-              }
-            }
+            return skills.start(name, {}, observation);
           },
         },
         tactician: useTactician ? (useAi ? aiSdkReasoner<World, number>({
@@ -208,16 +219,7 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
               traceStarted = true;
               await traceSink.record({ ...event, type: "run.config", detail: { seed, models: models ?? "scripted" } });
             }
-            if (watch && event.type === "decision") {
-              console.log(`Action: ${(event.detail as { candidateId: string }).candidateId}`);
-            }
-            if (watch && event.type === "proposal.activated") {
-              const change = event.detail as { role: string; directive: { instruction: string } };
-              console.log(`${change.role} changes directive: ${change.directive.instruction}`);
-            }
-            if (watch && event.type === "verification") {
-              console.log(`Outcome: ${(event.detail as { status: string }).status}`);
-            }
+            if (watch) showWatchEvent(event);
             await traceSink.record(event);
           },
         },
@@ -234,6 +236,8 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
             await new Promise(resolve => setTimeout(resolve, 650));
           }
         },
+        finish: () => runtime.finish(),
+        hasActiveSkill: () => runtime.hasActiveSkill(),
         outcome: () => game.outcome(),
         tracePath: traceSink.path,
         ...(models === undefined ? {} : { models }),
@@ -243,21 +247,19 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
   };
 }
 
-function renderReasoning(request: { role: string; observation: { state: World }; authority: { goal: { description: string }; directive?: { instruction: string } }; lastVerification?: { status: string } }): string {
+async function renderReasoning(request: ReasoningRequest<World>): Promise<string> {
   return JSON.stringify({
     role: request.role,
     goal: request.authority.goal.description,
     currentDirective: request.authority.directive?.instruction,
     position: request.observation.state.position,
+    skills: await skillGuidance(request),
     lastOutcome: request.lastVerification?.status,
     gameRules: "Positions are 0 through 5. Ordinary advance is blocked at position 1 by a wall and at position 3 by a gap. The directive instruction vault_wall enables vault at position 1. The directive instruction bridge_gap enables bridge at position 3. Preserve the current directive when it still works.",
   });
 }
 
-const catalog = await SkillCatalog.discover(new URL("../examples/skills", import.meta.url).pathname);
-const availableSkills = await selectSkillSummaries(catalog, {
-  select(_context, available) { return available.map(skill => skill.name); },
-}, {});
+const availableSkills = catalog.list();
 const watch = process.argv.includes("--watch");
 const configurations = watch
   ? [configuration("full-hierarchy", true, true, true)]

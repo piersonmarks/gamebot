@@ -26,10 +26,10 @@ The demo runs the same deterministic environment with reflex only, reflex plus t
 
 ## Modules and ownership
 
-- [`src/core`](src/core/index.ts) owns one session's goal, current directive, revision checks, candidate selection, action dispatch, verification, scheduling, and trace events. The game adapter owns native state and action meaning. The reflex chooses an offered candidate ID. Reasoners submit proposals; the coordinator checks the proposal's basis before activation. A file trace sink persists authority and observation revisions with each event.
-- [`src/skills`](src/skills/index.ts) discovers standard [`SKILL.md`](https://agentskills.io/specification) packages and loads instructions on demand. The injector selects descriptions for a model. Executable skills require separate registration and return one proposed action or a terminal outcome per progress call. Their caller validates and dispatches actions.
+- [`src/core`](src/core/index.ts) owns one session's goal, current directive, revision checks, candidate selection, action dispatch, skill progress and cancellation, verification, scheduling, and trace events. The game adapter owns native state and action meaning. The reflex chooses an offered candidate ID. Reasoners submit proposals; the coordinator checks the proposal's basis before activation. Each step advances at most one skill action so observations and interrupts can occur between actions. A file trace sink persists authority and observation revisions with each event.
+- [`src/skills`](src/skills/index.ts) discovers standard [`SKILL.md`](https://agentskills.io/specification) packages and loads instructions on demand. A replaceable injector selects relevant skills for each model decision. Executable skills require separate registration and return one proposed action or a terminal outcome per progress call. The session runtime validates and dispatches proposed actions.
 - [`src/memory`](src/memory/index.ts) records scoped episodes, validates proposed lessons against cited episodes, writes versioned snapshots, and lets research runs pin a snapshot. Retrieval is replaceable; its initial implementation uses lexical matching. Game version and world/save scope prevent accidental cross-game recall.
-- [`src/eval`](src/eval/harness.ts) runs configurations on fresh sessions and reports gameplay and reasoning metrics separately.
+- [`src/eval`](src/eval/harness.ts) runs configurations on fresh sessions, waits for a terminal skill outcome after a game goal is reached, settles background work, then reports gameplay and reasoning metrics.
 - [`src/models`](src/models/ai-sdk.ts) adapts Vercel AI SDK `generateText` to the reflex and reasoning interfaces. Model selection is supplied at session setup as a Gateway ID or any AI SDK language model. Game integrations choose what context to send. Structured output is validated, candidate IDs are checked, cancellation reaches the provider, and token use and latency are reported through a callback.
 
 The demo in [`src/demo.ts`](src/demo.ts) shows how a game integration supplies observations, candidate generation, action validation, verification, signals, and optional reasoners. [`examples/skills`](examples/skills) contains example Agent Skills packages. The package surface is exported from [`src/index.ts`](src/index.ts).
@@ -38,14 +38,13 @@ The demo in [`src/demo.ts`](src/demo.ts) shows how a game integration supplies o
 
 An adapter should provide a revision on each observation or validate the selected action against a fresh observation before dispatch. It should translate native events and outcomes into scheduler signals. A verifier should return `success`, `failure`, `pending`, or `unknown`; an unknown outcome must not be treated as proof of success. The runtime can use a deterministic first-candidate selector when no reflex model is configured. The scheduler is a replaceable deterministic rule set with cooldowns; tactician and strategist providers are optional and asynchronous.
 
-Skill instruction loading, skill selection, and executable registration are separate. `SKILL.md` does not grant permission to run scripts. The example registers the two executable skills explicitly and checks their proposed actions with the game adapter.
+Skill instruction loading, skill selection, and executable registration are separate. `SKILL.md` does not grant permission to run scripts. The example registers the two executable skills explicitly; the runtime checks their proposed actions with the game adapter. Selected skill instructions reach the model prompt at each decision, while executable authority remains with the registered skill and runtime.
 
 ## Next milestones
 
 1. Add a real structured-state adapter and a contrasting turn-based adapter. RCT2 is in the target set, with integration feasibility to assess before committing to an approach.
 2. Extend the AI SDK adapter with bounded, role-specific tools and dollar cost reporting. Preserve the same coordinator interface for local and remote providers.
-3. Let long-running skills advance while observations and interrupts continue. Add explicit skill ownership and cancellation handoff in the coordinator.
-4. Wire run-end episode recording and evidence-based consolidation into the session lifecycle. Keep research runs pinned to a selected memory snapshot.
-5. Use the evaluation harness for matched runs across architectures, with game-specific success metrics and shared cost/latency reporting.
+3. Wire run-end episode recording and evidence-based consolidation into the session lifecycle. Keep research runs pinned to a selected memory snapshot.
+4. Use the evaluation harness for matched runs across architectures, with game-specific success metrics and shared cost/latency reporting.
 
 The runtime is intentionally one process today. The game adapter, candidate generator, reflex, scheduler, executor, verifier, reasoning providers, trace sink, skill injector, and memory retriever are replaceable at session setup. Goals remain user-authoritative; model proposals can change the directive but not the user goal.

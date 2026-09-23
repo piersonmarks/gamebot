@@ -20,13 +20,13 @@ export interface SkillExecutor<Params, Action, Result> {
   start(params: Params, observation: unknown): Promise<SkillExecution<Action, Result>>;
 }
 
-type Starter = (params: unknown, observation: unknown) => Promise<SkillExecution<unknown, unknown>>;
+type Starter<Action> = (params: unknown, observation: unknown) => Promise<SkillExecution<Action, unknown>>;
 
 /** Registration is explicit; a SKILL.md never grants executable authority. */
-export class SkillExecutorRegistry {
-  private readonly starters = new Map<string, Starter>();
+export class SkillExecutorRegistry<Action = unknown> {
+  private readonly starters = new Map<string, Starter<Action>>();
 
-  register<Params, Action, Result>(
+  register<Params, Result>(
     name: string,
     executor: SkillExecutor<Params, Action, Result>,
   ): void {
@@ -44,7 +44,7 @@ export class SkillExecutorRegistry {
     name: string,
     params: unknown,
     observation: unknown,
-  ): Promise<SkillExecution<unknown, unknown>> {
+  ): Promise<SkillExecution<Action, unknown>> {
     const starter = this.starters.get(name);
     if (!starter) throw new Error(`No executor registered for skill: ${name}`);
     return starter(params, observation);

@@ -1,4 +1,5 @@
 import { RuleScheduler } from "./scheduler.js";
+import type { SkillExecution } from "../skills/executor.js";
 import type {
   Authority, Candidate, CandidateGenerator, DecisionContext, Directive, DirectiveProposal,
   Executor, GameAdapter, Goal, Observation, ProposalValidator, Reasoner, ReasoningRole,
@@ -10,8 +11,8 @@ export interface SessionOptions<State, Action, Assumptions = unknown> {
   candidates: CandidateGenerator<State, Action>;
   /** Omit for deterministic first-candidate selection. */
   reflex?: Reflex<State, Action>;
-  /** Omit to dispatch through the adapter. A skill executor can own this seam. */
-  executor?: Executor<Action>;
+  /** Starts a registered skill for selected actions; ordinary actions use the adapter. */
+  executor?: Executor<State, Action>;
   verifier: Verifier<State, Action>;
   scheduler?: Scheduler<State>;
   tactician?: Reasoner<State, Assumptions>;
@@ -36,8 +37,11 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   private queue: Promise<void> = Promise.resolve();
   private stopped = false;
   private readonly running = new Map<ReasoningRole, AbortController>();
+  private readonly background = new Set<Promise<void>>();
+  private readonly cancellations = new Set<Promise<void>>();
   private reflexDecision?: AbortController;
   private execution?: AbortController;
+  private activeSkill?: { run: SkillExecution<Action, unknown>; candidate: Candidate<Action>; before: Observation<State>; controller: AbortController };
   private pendingAuthorityChange = 0;
   private readonly scheduler: Scheduler<State>;
 
@@ -54,11 +58,16 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
     return this.latest;
   }
 
+  hasActiveSkill(): boolean {
+    return this.activeSkill !== undefined;
+  }
+
   /** Serialize user intent with observations and asynchronous proposals. */
   setGoal(goal: Goal): Promise<void> {
     this.pendingAuthorityChange++;
     this.reflexDecision?.abort();
     this.execution?.abort();
+    this.cancelSkill("goal changed");
     this.cancelReasoning();
     return this.enqueue(async () => {
       try {
@@ -76,6 +85,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
     this.pendingAuthorityChange++;
     this.reflexDecision?.abort();
     this.execution?.abort();
+    this.cancelSkill("directive changed");
     this.cancelReasoning();
     return this.enqueue(async () => {
       try {
@@ -99,6 +109,8 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
       const context = this.context(before, signals);
       await this.emit("observation", { revision: before.revision, events: before.events, signals });
       for (const role of this.scheduler.wake(context)) this.wake(role, context);
+
+      if (this.activeSkill) return this.advanceSkill(before);
 
       const candidates = await this.options.candidates.generate(context);
       await this.emit("candidates", candidates.map(({ id, description }) => ({ id, description })));
@@ -154,8 +166,17 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
       this.execution = controller;
       let executionError: unknown;
       try {
-        if (this.options.executor) await this.options.executor.execute(candidate.action, controller.signal);
-        else await this.options.adapter.execute(candidate.action, controller.signal);
+        const run = await this.options.executor?.start(candidate.action, current);
+        if (controller.signal.aborted || this.stopped || this.pendingAuthorityChange) {
+          if (run) await run.cancel("interrupted");
+          return { before, after: current };
+        }
+        if (run) {
+          this.activeSkill = { run, candidate, before: current, controller };
+          await this.emit("skill.started", { candidateId: candidate.id });
+          return this.advanceSkill(before);
+        }
+        await this.options.adapter.execute(candidate.action, controller.signal);
       } catch (error) {
         executionError = error;
         await this.emit("execution.error", { message: String(error) });
@@ -178,6 +199,68 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
     this.cancelReasoning();
     this.reflexDecision?.abort();
     this.execution?.abort();
+    this.cancelSkill("session stopped");
+  }
+
+  /** Stop new work and settle in-flight work before reading final trace and usage. */
+  async finish(): Promise<void> {
+    this.stop();
+    await this.queue;
+    await Promise.all([...this.background, ...this.cancellations]);
+    await this.queue;
+  }
+
+  private async advanceSkill(before: Observation<State>): Promise<StepResult<State, Action>> {
+    const active = this.activeSkill!;
+    let executionError: unknown;
+    try {
+      const progress = await active.run.progress(before);
+      if (active.controller.signal.aborted || this.stopped || this.pendingAuthorityChange) {
+        return { before };
+      }
+      if (progress.status === "finished") {
+        if (progress.outcome.status !== "succeeded") throw new Error(progress.outcome.reason);
+        await this.emit("skill.finished", { candidateId: active.candidate.id });
+      } else {
+        if (progress.action !== undefined) {
+          const current = await this.options.adapter.observe();
+          this.latest = current;
+          const legal = this.options.adapter.validateAction
+            ? await this.options.adapter.validateAction(progress.action, current)
+            : before.revision !== undefined && before.revision === current.revision;
+          if (!legal) throw new Error("Skill action is no longer valid");
+          if (active.controller.signal.aborted || this.stopped || this.pendingAuthorityChange) return { before, after: current };
+          await this.options.adapter.execute(progress.action, active.controller.signal);
+        }
+        const after = await this.options.adapter.observe();
+        this.latest = after;
+        return { before, after, candidate: active.candidate };
+      }
+    } catch (error) {
+      executionError = error;
+      this.cancelSkill("execution failed");
+      await this.emit("execution.error", { message: String(error) });
+    }
+    this.activeSkill = undefined;
+    this.execution = undefined;
+    const after = await this.options.adapter.observe();
+    this.latest = after;
+    const verification = await this.options.verifier.verify({ before: active.before, after, candidate: active.candidate, executionError });
+    this.lastVerification = verification;
+    await this.emit("verification", { candidateId: active.candidate.id, ...verification });
+    return { before, after, candidate: active.candidate, verification };
+  }
+
+  private cancelSkill(reason: string): void {
+    const active = this.activeSkill;
+    if (!active) return;
+    this.activeSkill = undefined;
+    active.controller.abort();
+    const cancellation = active.run.cancel(reason).then(() =>
+      this.emit("skill.cancelled", { candidateId: active.candidate.id, reason }), error =>
+      this.emit("skill.cancel.error", { candidateId: active.candidate.id, message: String(error) })).catch(() => undefined);
+    this.cancellations.add(cancellation);
+    void cancellation.then(() => this.cancellations.delete(cancellation));
   }
 
   private wake(role: ReasoningRole, context: DecisionContext<State>): void {
@@ -190,18 +273,22 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
     const sequence = context.sequence;
     const observed = context.observation;
     const startedAt = performance.now();
-    void this.emit("reasoning.started", { role, sequence }).catch(() => undefined);
-    void reasoner.propose({ ...context, role }, controller.signal).then(proposal => {
-      if (!proposal || controller.signal.aborted) return;
-      void this.enqueue(() => this.activateProposal(role, proposal, goalRevision, directiveRevision, sequence, observed))
-        .catch(error => this.emit("proposal.error", { role, message: String(error) }).catch(() => undefined));
-    }).catch(error => {
-      if (!controller.signal.aborted) void this.emit("reasoning.error", { role, message: String(error) }).catch(() => undefined);
-    }).finally(() => {
-      if (this.running.get(role) === controller) this.running.delete(role);
-      void this.emit("reasoning.completed", { role, latencyMs: performance.now() - startedAt })
-        .catch(() => undefined);
-    });
+    const work = (async () => {
+      try {
+        await this.emit("reasoning.started", { role, sequence });
+        const proposal = await reasoner.propose({ ...context, role }, controller.signal);
+        if (proposal && !controller.signal.aborted && !this.stopped) {
+          await this.enqueue(() => this.activateProposal(role, proposal, goalRevision, directiveRevision, sequence, observed));
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) await this.emit("reasoning.error", { role, message: String(error) });
+      } finally {
+        if (this.running.get(role) === controller) this.running.delete(role);
+        await this.emit("reasoning.completed", { role, latencyMs: performance.now() - startedAt });
+      }
+    })().catch(() => undefined);
+    this.background.add(work);
+    void work.then(() => this.background.delete(work));
   }
 
   private async activateProposal(role: ReasoningRole, proposal: DirectiveProposal<Assumptions>, goalRevision: number, directiveRevision: number, sequence: number, observed: Observation<State>): Promise<void> {
@@ -228,6 +315,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
       await this.emit("proposal.rejected", { role, reason: "assumptions invalid or observation advanced" });
       return;
     }
+    this.cancelSkill("directive changed");
     this.authority = { ...this.authority, directive: proposal.directive, directiveRevision: directiveRevision + 1 };
     await this.emit("proposal.activated", { role, directive: proposal.directive, revision: this.authority.directiveRevision });
   }

@@ -2,6 +2,10 @@ import type { TraceEvent } from "../core/index.js";
 
 export interface EvaluationSession {
   step(): Promise<void>;
+  /** Settles execution, background reasoning, and trace writes before metrics are read. */
+  finish(): Promise<void>;
+  /** A completed game may still have an action awaiting its final skill outcome. */
+  hasActiveSkill?(): boolean;
   outcome(): { complete: boolean; score: number };
   tracePath?: string;
   models?: Readonly<Record<string, string>>;
@@ -55,9 +59,13 @@ export async function evaluate(
       });
       const started = performance.now();
       let steps = 0;
-      while (steps < maxSteps && !session.outcome().complete) {
-        await session.step();
-        steps++;
+      try {
+        while (steps < maxSteps && (!session.outcome().complete || session.hasActiveSkill?.())) {
+          await session.step();
+          steps++;
+        }
+      } finally {
+        await session.finish();
       }
       const { complete, score } = session.outcome();
       const costUsd = session.costUsd?.();

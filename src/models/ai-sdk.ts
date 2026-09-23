@@ -27,7 +27,7 @@ interface CommonOptions {
 
 export interface AiSdkReflexOptions<State, Action> extends CommonOptions {
   /** The game integration decides what state and action details the model sees. */
-  render(context: DecisionContext<State>, candidates: readonly Candidate<Action>[]): string;
+  render(context: DecisionContext<State>, candidates: readonly Candidate<Action>[]): string | Promise<string>;
 }
 
 export function aiSdkReflex<State, Action>(options: AiSdkReflexOptions<State, Action>): Reflex<State, Action> {
@@ -37,7 +37,7 @@ export function aiSdkReflex<State, Action>(options: AiSdkReflexOptions<State, Ac
       const result = await generateText({
         model: options.model,
         system: "Choose exactly one offered candidate ID. Return only the requested structured output.",
-        prompt: options.render(context, candidates),
+        prompt: await options.render(context, candidates),
         output: Output.object({ schema: choiceSchema }),
         abortSignal: signal,
         ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
@@ -54,7 +54,7 @@ export function aiSdkReflex<State, Action>(options: AiSdkReflexOptions<State, Ac
 }
 
 export interface AiSdkReasonerOptions<State, Assumptions> extends CommonOptions {
-  render(request: ReasoningRequest<State>): string;
+  render(request: ReasoningRequest<State>): string | Promise<string>;
   /** Relevant assumptions come from observed facts, not model claims. */
   captureAssumptions(request: ReasoningRequest<State>): Assumptions;
 }
@@ -68,7 +68,7 @@ export function aiSdkReasoner<State, Assumptions>(
       const result = await generateText({
         model: options.model,
         system: `You are the ${request.role}. Keep the user's goal authoritative. Preserve the current directive unless a change is useful. Return a directive proposal or no intervention.`,
-        prompt: options.render(request),
+        prompt: await options.render(request),
         output: Output.object({ schema: proposalSchema }),
         abortSignal: signal,
         ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),

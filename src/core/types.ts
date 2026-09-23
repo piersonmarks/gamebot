@@ -83,8 +83,9 @@ export interface Reflex<State, Action> {
   choose(context: DecisionContext<State>, candidates: readonly Candidate<Action>[], signal: AbortSignal): string | Promise<string>;
 }
 
-export interface Executor<Action> {
-  execute(action: Action, signal: AbortSignal): Promise<void>;
+export interface Executor<State, Action> {
+  /** Return undefined for an ordinary action handled by the game adapter. */
+  start(action: Action, observation: Observation<State>): Promise<import("../skills/executor.js").SkillExecution<Action, unknown> | undefined>;
 }
 
 export interface Verifier<State, Action> {
