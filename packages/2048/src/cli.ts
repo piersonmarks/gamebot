@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve, join, dirname, delimiter } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import { chromium } from "playwright";
 import { z } from "zod";
 import { FileTraceSink, SessionRuntime, aiSdkReflex, aiSdkVisionExtractor, type TraceEvent } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
+import { candidates2048, defaultPolicy, policyReflex, policySchema } from "./policy.js";
 
 function argument(name: string): string | undefined {
   return process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -31,6 +32,8 @@ const stepLimit = argument("turns") ?? argument("steps");
 const steps = stepLimit === undefined ? undefined : Number(stepLimit);
 const target = Number(argument("target") ?? 2048);
 const seed = Number(argument("seed") ?? 1);
+const policyPath = argument("policy");
+const policy = policyPath ? policySchema.parse(JSON.parse(await readFile(resolve(policyPath), "utf8"))) : defaultPolicy;
 if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
     !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed)) {
   throw new Error("--turns/--steps (if provided) and --target must be positive integers; --seed must be an integer");
@@ -38,6 +41,7 @@ if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
 const headless = process.argv.includes("--headless");
 const verbose = process.argv.includes("--verbose");
 const useAi = process.argv.includes("--ai");
+if (useAi && policyPath) throw new Error("Use either --ai or --policy, not both");
 const observer = argument("observe") ?? "dom";
 if (observer !== "dom" && observer !== "vision") throw new Error("--observe must be dom or vision");
 const model = useAi ? process.env.GAMEBOT_REFLEX_MODEL ?? process.env.GAMEBOT_MODEL : undefined;
@@ -144,16 +148,7 @@ try {
   } };
   session = new SessionRuntime<Game2048State, Direction>({
     adapter: game,
-    candidates: { generate(context) {
-      const board = context.observation.state.board;
-      return (["up", "right", "down", "left"] as const).flatMap(direction => {
-        const preview = previewMove(board, direction);
-        return preview.changed ? [{
-          id: direction, action: direction,
-          description: `${direction}; immediate merge points ${preview.points}; empty cells ${preview.board.flat().filter(value => value === 0).length}`,
-        }] : [];
-      });
-    } },
+    candidates: { generate: candidates2048 },
     reflex: useAi ? aiSdkReflex<Game2048State, Direction>({
       model: model!,
       maxOutputTokens: 96,
@@ -168,16 +163,7 @@ try {
           candidates: candidates.map(({ id, description }) => ({ id, description })),
         });
       },
-    }) : { choose(context, candidates) {
-      const ranked = candidates.map(candidate => {
-        const preview = previewMove(context.observation.state.board, candidate.action);
-        const empty = preview.board.flat().filter(value => value === 0).length;
-        const corner = preview.board[0]![0] === Math.max(...preview.board.flat()) ? 20 : 0;
-        return { id: candidate.id, score: preview.points * 2 + empty * 10 + corner, mergePoints: preview.points, empty, corner };
-      }).sort((a, b) => b.score - a.score);
-      if (verbose) console.log(`[verbose] heuristic ranking: ${JSON.stringify(ranked)}`);
-      return ranked[0]!.id;
-    } },
+    }) : policyReflex(policy, verbose ? ranking => console.log(`[verbose] policy ranking: ${JSON.stringify(ranking)}`) : undefined),
     verifier: { verify({ before, after, candidate, executionError }) {
       if (executionError) return { status: "failure", reason: String(executionError) };
       if (observer === "vision") {
@@ -202,7 +188,7 @@ try {
   }, { id: "reach-tile", description: `Reach a ${target} tile in 2048` });
 
   console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; target ${target}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
-  if (verbose) console.log(`[verbose] move selector: ${useAi ? `AI reflex (${model})` : "heuristic"}; tactician/strategist: not configured`);
+  if (verbose) console.log(`[verbose] move selector: ${useAi ? `AI reflex (${model})` : `policy ${JSON.stringify(policy)}`}; tactician/strategist: not configured`);
   let finalState: Game2048State | undefined;
   let moves = 0;
   let stopReason = "no-action";

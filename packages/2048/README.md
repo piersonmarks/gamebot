@@ -22,3 +22,13 @@ On a machine without a graphical desktop, use `--headless` for a smoke run; it s
 This bridge is tailored to the Classic site's `gameState` snapshot and rendered tiles. It does not support the redesigned site at play2048.co. Each new browser game should have its own package with its own observation, action, and verification rules.
 
 The runner creates `.gamebot/games/2048/tools/` for game-scoped agent tool drafts. Drafts are inert until the bridge explicitly registers a reviewed implementation; `tools/` in this package is reserved for those implementations.
+
+To run the outer research loop with one command:
+
+```sh
+npm run autoplay -- --game=2048
+```
+
+This plays repeatable simulated 2048 games, records each game's moves and result, proposes a policy revision, and compares it with the current policy on the same training seeds. Promising revisions must also improve on fresh matched validation seeds before they are promoted. After all rounds, an untouched test set compares the selected policy with the original baseline. Revisions and the JSON Lines run journal are saved under `.gamebot/research/2048/`. Use `--rounds=5 --games=4 --turns=1000 --target=2048 --seed=1` to change the experiment; `--games` sets the number of seeds in each set. Ctrl+C stops the loop. `--watch` opens a visible browser game with the selected policy after research completes.
+
+Without model configuration, the proposer tries a small built-in set of policy revisions so the loop works locally. Set `GAMEBOT_RESEARCH_MODEL` to an AI SDK model ID to have a model review the weakest training game and propose the next revision. That uses model calls. The first editable surface is the move policy: weights for merges, empty cells, top-left corner, board smoothness, and one-step tile-spawn lookahead. This is a first experiment in policy improvement, not a coding agent, Jev integration, or general skill synthesis. The game rules and promotion metric are fixed outside the proposer. You can replay the selected policy against the live Classic site with `npm run game -- --game=2048 --policy=/path/to/champion.json`.

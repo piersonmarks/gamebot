@@ -12,24 +12,30 @@ for (const id of await readdir(installed)) {
   const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
   if (manifest.gamebot?.playable && manifest.name === `@gamebot/${id}`) {
     const bin = typeof manifest.bin === "string" ? manifest.bin : Object.values(manifest.bin ?? {})[0];
-    if (typeof bin === "string") games.set(id, { directory, manifest, bin, defaultArgs: manifest.gamebot.defaultArgs ?? [] });
+    if (typeof bin === "string") games.set(id, { directory, manifest, bin, researchBin: manifest.gamebot.researchBin, defaultArgs: manifest.gamebot.defaultArgs ?? [] });
   }
 }
 
 const args = process.argv.slice(2);
+const autoplay = args.includes("--autoplay");
 const gameArg = args.find(arg => arg.startsWith("--game="));
 const gameIndex = args.indexOf("--game");
 const id = gameArg?.slice(7) ?? (gameIndex >= 0 ? args[gameIndex + 1] : undefined);
 if (!id || args.includes("--help") || args.includes("--list")) {
-  console.log(`Usage: npm run game -- --game=<id> [game options]\nAvailable games: ${[...games.keys()].join(", ")}`);
+  console.log(`Usage: npm run ${autoplay ? "autoplay" : "game"} -- --game=<id> [options]\nAvailable games: ${[...games.keys()].join(", ")}`);
 } else {
   const game = games.get(id);
   if (!game) {
     console.error(`Unknown or uninstalled game '${id}'. Available games: ${[...games.keys()].join(", ")}`);
     process.exitCode = 1;
   } else {
+    if (autoplay && typeof game.researchBin !== "string") {
+      console.error(`Game '${id}' does not provide an auto-research runner.`);
+      process.exitCode = 1;
+      process.exit();
+    }
     const options = args.filter((arg, index) =>
-      !(gameIndex >= 0 && (index === gameIndex || index === gameIndex + 1)) && !arg.startsWith("--game="));
+      !(gameIndex >= 0 && (index === gameIndex || index === gameIndex + 1)) && !arg.startsWith("--game=") && arg !== "--autoplay");
     const npm = process.env.npm_execpath;
     if (!npm) throw new Error("Run this launcher with npm run game -- --game=<id>");
     const run = (command, commandArgs, cwd) => new Promise((resolveRun, reject) => {
@@ -55,6 +61,6 @@ if (!id || args.includes("--help") || args.includes("--list")) {
     const coreCode = await run(process.execPath, [npm, "run", "build:core"], root);
     const buildCode = coreCode || await buildWorkspace(game.directory, game.manifest);
     if (buildCode !== 0) process.exitCode = buildCode;
-    else process.exitCode = await run(process.execPath, [resolve(game.directory, game.bin), ...game.defaultArgs, ...options], game.directory);
+    else process.exitCode = await run(process.execPath, [resolve(game.directory, autoplay ? game.researchBin : game.bin), ...(autoplay ? [] : game.defaultArgs), ...options], game.directory);
   }
 }
