@@ -18,12 +18,12 @@
     "build:core": "tsc -p tsconfig.json",
     "game": "node scripts/game.mjs",
     "demo": "node dist/demo.js",
-    "watch": "npm run build && node dist/demo.js --watch",
-    "watch:ai": "npm run build && node dist/demo.js --watch --ai",
-    "chess": "npm run build && npm run play -w @gamebot/chess -- --watch",
-    "snake": "npm run build && npm run play -w @gamebot/snake -- --watch",
-    "snake:window": "npm run build && npm run play -w @gamebot/snake -- --window",
-    "2048": "npm run build && npm run play -w @gamebot/2048 --"
+    "watch": "npm run build:core && node dist/demo.js --watch",
+    "watch:ai": "npm run build:core && node dist/demo.js --watch --ai",
+    "chess": "npm run game -- --game=chess",
+    "snake": "npm run build:core && npm run build -w @gamebot/snake && npm run play -w @gamebot/snake -- --watch",
+    "snake:window": "npm run game -- --game=snake",
+    "2048": "npm run game -- --game=2048"
   },
   "dependencies": {
     "@types/node": "^22.20.3",

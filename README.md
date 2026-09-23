@@ -9,9 +9,9 @@ npm install
 npm run game -- --game=2048
 ```
 
-The launcher lists installed playable bridges with `npm run game -- --list`. Choose `--game=chess` for a terminal board or `--game=snake` for a local browser viewer. Game options follow the ID, for example `npm run game -- --game=2048 --seed=42` or `npm run game -- --game=chess --ai`. Each bridge declares its own launch defaults; the launcher builds the workspace and starts that bridge. The game code stays in its separate package or installation.
+The launcher lists installed playable bridges with `npm run game -- --list`. Choose `--game=chess` for a terminal board or `--game=snake` for a local browser viewer. Game options follow the ID, for example `npm run game -- --game=2048 --seed=42` or `npm run game -- --game=chess --ai`. Each bridge declares its own launch defaults; the launcher builds core, the selected local bridge, and its local dependencies before starting it. `npm run build` remains the explicit full-workspace build.
 
-To watch the path game play out in the terminal, run `npm run build` followed by `npm run watch`. It shows the agent's position, chosen action, verification result, and any tactical or strategic directive change at a readable pace.
+To watch the path game play out in the terminal, run `npm run watch`. It shows the agent's position, chosen action, verification result, and any tactical or strategic directive change at a readable pace.
 
 Chess and Snake are separate installable workspace bridges, not part of the core runtime. The older `npm run chess` and `npm run snake` shortcuts still work. Pass `--seed=42` to vary the starting game, or `--ai` to use `GAMEBOT_REFLEX_MODEL` / `GAMEBOT_MODEL` instead of the deterministic heuristic:
 

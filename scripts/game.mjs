@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { readFile, readdir, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -12,7 +12,7 @@ for (const id of await readdir(installed)) {
   const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
   if (manifest.gamebot?.playable && manifest.name === `@gamebot/${id}`) {
     const bin = typeof manifest.bin === "string" ? manifest.bin : Object.values(manifest.bin ?? {})[0];
-    if (typeof bin === "string") games.set(id, { directory, bin, defaultArgs: manifest.gamebot.defaultArgs ?? [] });
+    if (typeof bin === "string") games.set(id, { directory, manifest, bin, defaultArgs: manifest.gamebot.defaultArgs ?? [] });
   }
 }
 
@@ -37,7 +37,23 @@ if (!id || args.includes("--help") || args.includes("--list")) {
       child.once("error", reject);
       child.once("exit", (code, signal) => resolveRun(code ?? (signal === "SIGINT" ? 130 : 1)));
     });
-    const buildCode = await run(process.execPath, [npm, "run", "build"], root);
+    const workspaceRoot = await realpath(join(root, "packages"));
+    const built = new Set();
+    const buildWorkspace = async (directory, manifest) => {
+      const path = relative(workspaceRoot, await realpath(directory));
+      if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path) || built.has(manifest.name)) return 0;
+      built.add(manifest.name);
+      const dependencies = { ...manifest.dependencies, ...manifest.peerDependencies, ...manifest.devDependencies };
+      for (const name of Object.keys(dependencies).filter(name => name.startsWith("@gamebot/") && name !== "@gamebot/core")) {
+        const dependency = join(installed, name.slice("@gamebot/".length));
+        const dependencyManifest = JSON.parse(await readFile(join(dependency, "package.json"), "utf8"));
+        const code = await buildWorkspace(dependency, dependencyManifest);
+        if (code !== 0) return code;
+      }
+      return manifest.scripts?.build ? run(process.execPath, [npm, "run", "build", "-w", manifest.name], root) : 0;
+    };
+    const coreCode = await run(process.execPath, [npm, "run", "build:core"], root);
+    const buildCode = coreCode || await buildWorkspace(game.directory, game.manifest);
     if (buildCode !== 0) process.exitCode = buildCode;
     else process.exitCode = await run(process.execPath, [resolve(game.directory, game.bin), ...game.defaultArgs, ...options], game.directory);
   }
