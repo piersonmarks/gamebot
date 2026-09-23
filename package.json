@@ -2,7 +2,7 @@
   "name": "@gamebot/core",
   "version": "0.1.0",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/browser", "packages/*"],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
