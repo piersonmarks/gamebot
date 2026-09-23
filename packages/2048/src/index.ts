@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Page } from "playwright";
 import { BrowserGameBridge } from "@gamebot/browser";
 import type { GameAdapter, Observation } from "@gamebot/core";
@@ -83,8 +84,8 @@ async function readGame(page: Page): Promise<Game2048State> {
 
 export class Game2048 implements GameAdapter<Game2048State, Direction> {
   private readonly browser: BrowserGameBridge<Game2048State>;
-  constructor(private readonly page: Page) {
-    this.browser = new BrowserGameBridge(page, { extractState: () => readGame(page) });
+  constructor(private readonly page: Page, private readonly visualState?: () => Promise<Game2048State>) {
+    this.browser = new BrowserGameBridge(page, { extractState: () => visualState ? visualState() : readGame(page) });
   }
 
   async observe(): Promise<Observation<Game2048State>> {
@@ -102,9 +103,13 @@ export class Game2048 implements GameAdapter<Game2048State, Direction> {
   }
 
   async execute(action: Direction, signal: AbortSignal): Promise<void> {
-    const before = await this.page.evaluate(() => localStorage.getItem("gameState"));
+    const before = this.visualState ? undefined : await this.page.evaluate(() => localStorage.getItem("gameState"));
     await this.browser.execute({ type: "key", key: keys[action] }, signal);
     if (signal.aborted) return;
+    if (this.visualState) {
+      await delay(500, undefined, { signal });
+      return;
+    }
     await this.page.waitForFunction(previous => {
       const current = localStorage.getItem("gameState");
       return current === null

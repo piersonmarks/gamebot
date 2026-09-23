@@ -18,6 +18,8 @@ await browser.close();
 
 For DOM games, set `textSelector` to a useful status region and use selector-based click candidates. If a game exposes trustworthy structured state, pass `extractState: () => page.evaluate(...)` from its game-specific runner. For canvas games without readable state, set `captureScreenshot: true` to receive PNGs and use bounded key or coordinate-click candidates. At least one observation source is required. A key action can use `holdMs` up to 2000 for real-time games. The bridge checks that a fresh observation is still on the original origin and that candidate input is structurally valid; game-specific legality and success remain the bridge runner's responsibility.
 
+For games whose pixels are more useful than their DOM, `aiSdkVisionExtractor` from `@gamebot/core` accepts a PNG, a game-specific prompt and schema, and an AI SDK model. A runner can pass `extractState: () => extract(await page.screenshot({ type: "png" }))` without changing this browser bridge. [`@gamebot/2048`](../2048) uses that path with `--observe=vision`; its default mode reads the site's structured state.
+
 The core AI SDK reflex can receive multimodal messages. When `captureScreenshot: true` is configured, a canvas game's `render` callback can supply the observed screenshot as an image part alongside the offered candidate IDs:
 
 ```ts

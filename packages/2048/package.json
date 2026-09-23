@@ -9,7 +9,7 @@
   "bin": { "gamebot-2048": "./dist/cli.js" },
   "gamebot": { "playable": true, "defaultArgs": [] },
   "scripts": { "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json", "play": "node dist/cli.js" },
-  "dependencies": { "playwright": "^1.63.0" },
+  "dependencies": { "playwright": "^1.63.0", "zod": "^4.6.5" },
   "peerDependencies": { "@gamebot/core": "^0.1.0", "@gamebot/browser": "^0.1.0" },
   "devDependencies": {
     "@gamebot/core": "file:../..",

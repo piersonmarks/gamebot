@@ -9,7 +9,8 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
-import { FileTraceSink, SessionRuntime, aiSdkReflex } from "@gamebot/core";
+import { z } from "zod";
+import { FileTraceSink, SessionRuntime, aiSdkReflex, aiSdkVisionExtractor } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 
 function argument(name: string): string | undefined {
@@ -31,8 +32,18 @@ if (![steps, target, seed].every(Number.isSafeInteger) || steps < 1 || target < 
 }
 const headless = process.argv.includes("--headless");
 const useAi = process.argv.includes("--ai");
+const observer = argument("observe") ?? "dom";
+if (observer !== "dom" && observer !== "vision") throw new Error("--observe must be dom or vision");
 const model = useAi ? process.env.GAMEBOT_REFLEX_MODEL ?? process.env.GAMEBOT_MODEL : undefined;
 if (useAi && !model) throw new Error("Set GAMEBOT_REFLEX_MODEL or GAMEBOT_MODEL for --ai");
+const visionModel = observer === "vision" ? process.env.GAMEBOT_VISION_MODEL ?? process.env.GAMEBOT_MODEL ?? "google/gemini-3.8-flash" : undefined;
+const visionSchema = z.object({
+  board: z.array(z.array(z.number().int().nonnegative().refine(value => value === 0 || value >= 2 && Number.isInteger(Math.log2(value)))).length(4)).length(4),
+  score: z.number().int().nonnegative(),
+  over: z.boolean(),
+  won: z.boolean(),
+  uncertain: z.boolean(),
+});
 
 const browserOptions = {
   headless,
@@ -82,9 +93,28 @@ try {
     Math.random = () => ((randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0) / 0x100000000);
   }, seed);
   await page.goto(gameUrl);
-  await page.waitForFunction(() => localStorage.getItem("gameState") !== null);
+  if (observer === "vision") await page.locator(".tile-container .tile").first().waitFor();
+  else await page.waitForFunction(() => localStorage.getItem("gameState") !== null);
 
-  const game = new Game2048(page);
+  const visionUsage = { calls: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0 };
+  const readVision = visionModel ? aiSdkVisionExtractor({
+    model: visionModel,
+    schema: visionSchema,
+    prompt: "Read the visible 2048 board. Return a 4x4 board from top row to bottom row, left to right, using 0 for empty cells. Read the main score number, ignoring any animated +points label. Set over or won only when the corresponding end-game overlay is visible. Set uncertain to true if any tile or score cannot be read. Do not infer hidden state.",
+    maxOutputTokens: 512,
+    timeoutMs: 30_000,
+    onCall(report) {
+      visionUsage.calls++;
+      visionUsage.inputTokens += report.usage.inputTokens ?? 0;
+      visionUsage.outputTokens += report.usage.outputTokens ?? 0;
+      visionUsage.latencyMs += report.latencyMs;
+    },
+  }) : undefined;
+  const game = new Game2048(page, readVision ? async () => {
+    const { uncertain, ...state } = await readVision(await page.screenshot({ type: "png" }));
+    if (uncertain) throw new Error("Vision could not read the 2048 board confidently");
+    return state;
+  } : undefined);
   const runId = randomUUID();
   const trace = new FileTraceSink(resolve(".gamebot", "traces", `2048-${seed}-${runId}.jsonl`));
   const session = new SessionRuntime<Game2048State, Direction>({
@@ -121,15 +151,30 @@ try {
         return score(b.action) - score(a.action);
       })[0]!.id;
     } },
-    verifier: { verify({ before, after, executionError }) {
+    verifier: { verify({ before, after, candidate, executionError }) {
       if (executionError) return { status: "failure", reason: String(executionError) };
+      if (observer === "vision") {
+        const preview = previewMove(before.state.board, candidate.action);
+        let spawned = 0;
+        for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
+          const expected = preview.board[y]![x]!;
+          const actual = after.state.board[y]![x]!;
+          if (actual !== expected) {
+            if (expected !== 0 || (actual !== 2 && actual !== 4)) return { status: "unknown", reason: "vision board is not a legal 2048 transition" };
+            spawned++;
+          }
+        }
+        if (spawned !== 1 || after.state.score !== before.state.score + preview.points) {
+          return { status: "unknown", reason: "vision board or score is inconsistent with the move" };
+        }
+      }
       return JSON.stringify(after.state.board) !== JSON.stringify(before.state.board)
         ? { status: "success" } : { status: "failure", reason: "board did not change" };
     } },
     trace,
   }, { id: "reach-tile", description: `Reach a ${target} tile in 2048` });
 
-  console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; target ${target}.`);
+  console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; target ${target}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
   let finalState = (await game.observe()).state;
   try {
     for (let step = 0; step < steps && !stop; step++) {
@@ -137,7 +182,8 @@ try {
       const result = await session.step();
       finalState = (result.after ?? await game.observe()).state;
       if (!result.candidate) break;
-      console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}`);
+      console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
+      if (observer === "vision" && result.verification?.status !== "success") break;
       await delay(200);
     }
   } finally { await session.finish(); }
@@ -154,6 +200,7 @@ try {
     over: finalState.over,
     tracePath: trace.path,
     toolDrafts,
+    ...(visionModel ? { visionUsage } : {}),
     ...(screenshotPath ? { screenshotPath } : {}),
   }, null, 2));
   if (!headless && !stop) {

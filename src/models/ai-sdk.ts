@@ -12,7 +12,7 @@ const proposalSchema = z.object({
 });
 
 export interface ModelCallReport {
-  role: "reflex" | ReasoningRole;
+  role: "vision" | "reflex" | ReasoningRole;
   usage: LanguageModelUsage;
   latencyMs: number;
 }
@@ -23,6 +23,31 @@ interface CommonOptions {
   maxOutputTokens?: number;
   timeoutMs?: number;
   onCall?: (report: ModelCallReport) => void;
+}
+
+export interface AiSdkVisionOptions<State> extends CommonOptions {
+  /** The game supplies the meaning and shape of the state visible in a screenshot. */
+  prompt: string;
+  schema: z.ZodType<State>;
+}
+
+export function aiSdkVisionExtractor<State>(options: AiSdkVisionOptions<State>) {
+  return async (screenshot: Buffer, signal?: AbortSignal): Promise<State> => {
+    const started = performance.now();
+    const result = await generateText({
+      model: options.model,
+      messages: [{ role: "user", content: [
+        { type: "text", text: options.prompt },
+        { type: "file", data: screenshot, mediaType: "image/png" },
+      ] }],
+      output: Output.object({ schema: options.schema }),
+      ...(signal ? { abortSignal: signal } : {}),
+      ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
+      ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+    });
+    options.onCall?.({ role: "vision", usage: result.usage, latencyMs: performance.now() - started });
+    return result.output;
+  };
 }
 
 export interface AiSdkReflexOptions<State, Action> extends CommonOptions {
