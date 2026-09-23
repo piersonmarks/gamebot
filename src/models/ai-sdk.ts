@@ -1,4 +1,4 @@
-import { generateText, Output, type LanguageModel, type LanguageModelUsage } from "ai";
+import { generateText, Output, type LanguageModel, type LanguageModelUsage, type ModelMessage } from "ai";
 import { z } from "zod";
 import type {
   Candidate, DecisionContext, DirectiveProposal, Reasoner, ReasoningRequest,
@@ -27,17 +27,18 @@ interface CommonOptions {
 
 export interface AiSdkReflexOptions<State, Action> extends CommonOptions {
   /** The game integration decides what state and action details the model sees. */
-  render(context: DecisionContext<State>, candidates: readonly Candidate<Action>[]): string | Promise<string>;
+  render(context: DecisionContext<State>, candidates: readonly Candidate<Action>[]): string | ModelMessage[] | Promise<string | ModelMessage[]>;
 }
 
 export function aiSdkReflex<State, Action>(options: AiSdkReflexOptions<State, Action>): Reflex<State, Action> {
   return {
     async choose(context, candidates, signal) {
       const started = performance.now();
+      const rendered = await options.render(context, candidates);
       const result = await generateText({
         model: options.model,
         system: "Choose exactly one offered candidate ID. Return only the requested structured output.",
-        prompt: await options.render(context, candidates),
+        ...(typeof rendered === "string" ? { prompt: rendered } : { messages: rendered }),
         output: Output.object({ schema: choiceSchema }),
         abortSignal: signal,
         ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
