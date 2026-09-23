@@ -36,6 +36,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   private queue: Promise<void> = Promise.resolve();
   private stopped = false;
   private readonly running = new Map<ReasoningRole, AbortController>();
+  private reflexDecision?: AbortController;
   private execution?: AbortController;
   private pendingAuthorityChange = 0;
   private readonly scheduler: Scheduler<State>;
@@ -56,6 +57,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   /** Serialize user intent with observations and asynchronous proposals. */
   setGoal(goal: Goal): Promise<void> {
     this.pendingAuthorityChange++;
+    this.reflexDecision?.abort();
     this.execution?.abort();
     this.cancelReasoning();
     return this.enqueue(async () => {
@@ -72,6 +74,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   /** Useful for operator direction or a promoted policy; goal remains authoritative. */
   setDirective(directive?: Directive): Promise<void> {
     this.pendingAuthorityChange++;
+    this.reflexDecision?.abort();
     this.execution?.abort();
     this.cancelReasoning();
     return this.enqueue(async () => {
@@ -108,7 +111,22 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
         return { before };
       }
 
-      const choice = this.options.reflex ? await this.options.reflex.choose(context, candidates) : candidates[0]!.id;
+      let choice: string;
+      if (this.options.reflex) {
+        const controller = new AbortController();
+        this.reflexDecision = controller;
+        try {
+          choice = await this.options.reflex.choose(context, candidates, controller.signal);
+        } catch (error) {
+          if (!controller.signal.aborted) throw error;
+          await this.emit("decision.interrupted");
+          return { before };
+        } finally {
+          this.reflexDecision = undefined;
+        }
+      } else {
+        choice = candidates[0]!.id;
+      }
       const candidate = candidates.find(item => item.id === choice);
       if (!candidate) {
         await this.emit("decision.invalid", { choice });
@@ -158,6 +176,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   stop(): void {
     this.stopped = true;
     this.cancelReasoning();
+    this.reflexDecision?.abort();
     this.execution?.abort();
   }
 

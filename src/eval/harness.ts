@@ -4,6 +4,8 @@ export interface EvaluationSession {
   step(): Promise<void>;
   outcome(): { complete: boolean; score: number };
   tracePath?: string;
+  models?: Readonly<Record<string, string>>;
+  tokens?(): { input: number; output: number };
   /** Omit when the provider cannot report cost. */
   costUsd?(): number | undefined;
 }
@@ -25,6 +27,8 @@ export interface EvaluationResult {
   failures: number;
   elapsedMs: number;
   tracePath?: string;
+  models?: Readonly<Record<string, string>>;
+  tokens?: { input: number; output: number };
   costUsd?: number;
 }
 
@@ -57,6 +61,7 @@ export async function evaluate(
       }
       const { complete, score } = session.outcome();
       const costUsd = session.costUsd?.();
+      const tokens = session.tokens?.();
       results.push({
         configuration: configuration.name,
         seed,
@@ -66,6 +71,8 @@ export async function evaluate(
         ...counts,
         elapsedMs: Math.round((performance.now() - started) * 100) / 100,
         ...(session.tracePath === undefined ? {} : { tracePath: session.tracePath }),
+        ...(session.models === undefined ? {} : { models: session.models }),
+        ...(tokens === undefined ? {} : { tokens }),
         ...(costUsd === undefined ? {} : { costUsd }),
       });
     }

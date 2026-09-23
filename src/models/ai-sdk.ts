@@ -1,0 +1,83 @@
+import { generateText, Output, type LanguageModel, type LanguageModelUsage } from "ai";
+import { z } from "zod";
+import type {
+  Candidate, DecisionContext, DirectiveProposal, Reasoner, ReasoningRequest,
+  ReasoningRole, Reflex,
+} from "../core/index.js";
+
+const choiceSchema = z.object({ candidateId: z.string() });
+const proposalSchema = z.object({
+  intervention: z.enum(["none", "directive"]),
+  directive: z.object({ id: z.string(), instruction: z.string() }).optional(),
+});
+
+export interface ModelCallReport {
+  role: "reflex" | ReasoningRole;
+  usage: LanguageModelUsage;
+  latencyMs: number;
+}
+
+interface CommonOptions {
+  /** An AI Gateway model ID or an AI SDK provider model. */
+  model: LanguageModel;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+  onCall?: (report: ModelCallReport) => void;
+}
+
+export interface AiSdkReflexOptions<State, Action> extends CommonOptions {
+  /** The game integration decides what state and action details the model sees. */
+  render(context: DecisionContext<State>, candidates: readonly Candidate<Action>[]): string;
+}
+
+export function aiSdkReflex<State, Action>(options: AiSdkReflexOptions<State, Action>): Reflex<State, Action> {
+  return {
+    async choose(context, candidates, signal) {
+      const started = performance.now();
+      const result = await generateText({
+        model: options.model,
+        system: "Choose exactly one offered candidate ID. Return only the requested structured output.",
+        prompt: options.render(context, candidates),
+        output: Output.object({ schema: choiceSchema }),
+        abortSignal: signal,
+        ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
+        ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+      });
+      options.onCall?.({ role: "reflex", usage: result.usage, latencyMs: performance.now() - started });
+      const choice = result.output.candidateId;
+      if (!candidates.some(candidate => candidate.id === choice)) {
+        throw new Error(`AI SDK reflex selected unoffered candidate: ${choice}`);
+      }
+      return choice;
+    },
+  };
+}
+
+export interface AiSdkReasonerOptions<State, Assumptions> extends CommonOptions {
+  render(request: ReasoningRequest<State>): string;
+  /** Relevant assumptions come from observed facts, not model claims. */
+  captureAssumptions(request: ReasoningRequest<State>): Assumptions;
+}
+
+export function aiSdkReasoner<State, Assumptions>(
+  options: AiSdkReasonerOptions<State, Assumptions>,
+): Reasoner<State, Assumptions> {
+  return {
+    async propose(request, signal): Promise<DirectiveProposal<Assumptions> | undefined> {
+      const started = performance.now();
+      const result = await generateText({
+        model: options.model,
+        system: `You are the ${request.role}. Keep the user's goal authoritative. Preserve the current directive unless a change is useful. Return a directive proposal or no intervention.`,
+        prompt: options.render(request),
+        output: Output.object({ schema: proposalSchema }),
+        abortSignal: signal,
+        ...(options.maxOutputTokens === undefined ? {} : { maxOutputTokens: options.maxOutputTokens }),
+        ...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+      });
+      options.onCall?.({ role: request.role, usage: result.usage, latencyMs: performance.now() - started });
+      if (result.output.intervention === "none") return undefined;
+      if (!result.output.directive) throw new Error("AI SDK reasoner omitted its directive");
+      return { directive: result.output.directive, assumptions: options.captureAssumptions(request) };
+    },
+  };
+}

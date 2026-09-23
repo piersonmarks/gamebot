@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { FileTraceSink, SessionRuntime, type GameAdapter, type Reasoner } from "./core/index.js";
 import { evaluate, type EvaluationConfiguration } from "./eval/harness.js";
+import { aiSdkReasoner, aiSdkReflex, type ModelCallReport } from "./models/index.js";
 import { SkillCatalog, SkillExecutorRegistry, selectSkillSummaries } from "./skills/index.js";
 
 interface World {
@@ -80,12 +81,31 @@ function board(position: number): string {
   return cells.join(" ");
 }
 
+const useAi = process.argv.includes("--ai");
+
+function modelFor(role: "reflex" | "tactician" | "strategist"): string {
+  const model = process.env[`GAMEBOT_${role.toUpperCase()}_MODEL`] ?? process.env.GAMEBOT_MODEL;
+  if (!model) throw new Error(`Set GAMEBOT_${role.toUpperCase()}_MODEL or GAMEBOT_MODEL to an AI Gateway model ID`);
+  return model;
+}
+
 function configuration(name: string, useTactician: boolean, useStrategist: boolean, watch = false): EvaluationConfiguration {
   return {
     name,
     create(seed, record) {
       const game = new PathGame();
       const traceSink = new FileTraceSink(resolve(".gamebot", "traces", `${name}-${seed}-${randomUUID()}.jsonl`));
+      const models = useAi ? {
+        reflex: modelFor("reflex"),
+        ...(useTactician ? { tactician: modelFor("tactician") } : {}),
+        ...(useStrategist ? { strategist: modelFor("strategist") } : {}),
+      } : undefined;
+      let traceStarted = false;
+      const tokens = { input: 0, output: 0 };
+      const onCall = (report: ModelCallReport) => {
+        tokens.input += report.usage.inputTokens ?? 0;
+        tokens.output += report.usage.outputTokens ?? 0;
+      };
       const skills = new SkillExecutorRegistry();
       for (const [name, action] of [["vault-wall", "vault"], ["bridge-gap", "bridge"]] as const) {
         skills.register(name, {
@@ -107,6 +127,20 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
       }
       const runtime = new SessionRuntime<World, Action, number>({
         adapter: game,
+        reflex: useAi ? aiSdkReflex<World, Action>({
+          model: models!.reflex,
+          maxOutputTokens: 96,
+          timeoutMs: 15_000,
+          render(context, candidates) {
+            return JSON.stringify({
+              goal: context.authority.goal,
+              directive: context.authority.directive,
+              position: context.observation.state.position,
+              candidates: candidates.map(({ id, description }) => ({ id, description })),
+            });
+          },
+          onCall,
+        }) : undefined,
         candidates: {
           generate({ observation, authority }) {
             const at = observation.state.position;
@@ -146,8 +180,22 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
             }
           },
         },
-        tactician: useTactician ? tactician : undefined,
-        strategist: useStrategist ? strategist : undefined,
+        tactician: useTactician ? (useAi ? aiSdkReasoner<World, number>({
+          model: models!.tactician!,
+          maxOutputTokens: 192,
+          timeoutMs: 30_000,
+          render: renderReasoning,
+          captureAssumptions: request => request.observation.state.position,
+          onCall,
+        }) : tactician) : undefined,
+        strategist: useStrategist ? (useAi ? aiSdkReasoner<World, number>({
+          model: models!.strategist!,
+          maxOutputTokens: 192,
+          timeoutMs: 30_000,
+          render: renderReasoning,
+          captureAssumptions: request => request.observation.state.position,
+          onCall,
+        }) : strategist) : undefined,
         proposalValidator: {
           validate(proposal, current) {
             return proposal.assumptions === current.state.position;
@@ -156,6 +204,10 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
         trace: {
           async record(event) {
             record(event);
+            if (!traceStarted) {
+              traceStarted = true;
+              await traceSink.record({ ...event, type: "run.config", detail: { seed, models: models ?? "scripted" } });
+            }
             if (watch && event.type === "decision") {
               console.log(`Action: ${(event.detail as { candidateId: string }).candidateId}`);
             }
@@ -184,9 +236,22 @@ function configuration(name: string, useTactician: boolean, useStrategist: boole
         },
         outcome: () => game.outcome(),
         tracePath: traceSink.path,
+        ...(models === undefined ? {} : { models }),
+        ...(useAi ? { tokens: () => ({ ...tokens }) } : {}),
       };
     },
   };
+}
+
+function renderReasoning(request: { role: string; observation: { state: World }; authority: { goal: { description: string }; directive?: { instruction: string } }; lastVerification?: { status: string } }): string {
+  return JSON.stringify({
+    role: request.role,
+    goal: request.authority.goal.description,
+    currentDirective: request.authority.directive?.instruction,
+    position: request.observation.state.position,
+    lastOutcome: request.lastVerification?.status,
+    gameRules: "Positions are 0 through 5. Ordinary advance is blocked at position 1 by a wall and at position 3 by a gap. The directive instruction vault_wall enables vault at position 1. The directive instruction bridge_gap enables bridge at position 3. Preserve the current directive when it still works.",
+  });
 }
 
 const catalog = await SkillCatalog.discover(new URL("../examples/skills", import.meta.url).pathname);

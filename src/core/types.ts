@@ -80,7 +80,7 @@ export interface CandidateGenerator<State, Action> {
 
 export interface Reflex<State, Action> {
   /** Returns only an offered candidate ID. The runtime rejects any other ID. */
-  choose(context: DecisionContext<State>, candidates: readonly Candidate<Action>[]): string | Promise<string>;
+  choose(context: DecisionContext<State>, candidates: readonly Candidate<Action>[], signal: AbortSignal): string | Promise<string>;
 }
 
 export interface Executor<Action> {

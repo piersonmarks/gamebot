@@ -12,6 +12,16 @@ npm run demo
 
 To watch the path game play out in the terminal, run `npm run watch`. It shows the agent's position, chosen action, verification result, and any tactical or strategic directive change at a readable pace.
 
+To run the same demo through actual models, set an [AI Gateway](https://ai-sdk.dev/docs/getting-started/choosing-a-provider) key and a current model ID, then run `npm run watch:ai`:
+
+```sh
+export AI_GATEWAY_API_KEY='your-key'
+export GAMEBOT_MODEL='provider/model-id'
+npm run watch:ai
+```
+
+Replace the model ID with one from the [current Gateway catalog](https://ai-gateway.vercel.sh/v1/models). `GAMEBOT_REFLEX_MODEL`, `GAMEBOT_TACTICIAN_MODEL`, and `GAMEBOT_STRATEGIST_MODEL` can override the common model individually. The command makes paid model calls when valid credentials and model IDs are supplied. It reports token use, while dollar cost stays unset until pricing is available. The regular `watch` and `demo` commands use no model service.
+
 The demo runs the same deterministic environment with reflex only, reflex plus tactician, and all three reasoning roles. It prints completion, score, decisions, reasoning calls, failures, elapsed time, and paths to JSON Lines traces under `.gamebot/traces/`. Its scripted reasoners demonstrate wiring; the scores are **not** evidence about model quality. Provider cost is omitted until a provider reports it. The evaluator accepts fresh sessions per configuration and seed, so real adapters can use the same harness.
 
 ## Modules and ownership
@@ -20,6 +30,7 @@ The demo runs the same deterministic environment with reflex only, reflex plus t
 - [`src/skills`](src/skills/index.ts) discovers standard [`SKILL.md`](https://agentskills.io/specification) packages and loads instructions on demand. The injector selects descriptions for a model. Executable skills require separate registration and return one proposed action or a terminal outcome per progress call. Their caller validates and dispatches actions.
 - [`src/memory`](src/memory/index.ts) records scoped episodes, validates proposed lessons against cited episodes, writes versioned snapshots, and lets research runs pin a snapshot. Retrieval is replaceable; its initial implementation uses lexical matching. Game version and world/save scope prevent accidental cross-game recall.
 - [`src/eval`](src/eval/harness.ts) runs configurations on fresh sessions and reports gameplay and reasoning metrics separately.
+- [`src/models`](src/models/ai-sdk.ts) adapts Vercel AI SDK `generateText` to the reflex and reasoning interfaces. Model selection is supplied at session setup as a Gateway ID or any AI SDK language model. Game integrations choose what context to send. Structured output is validated, candidate IDs are checked, cancellation reaches the provider, and token use and latency are reported through a callback.
 
 The demo in [`src/demo.ts`](src/demo.ts) shows how a game integration supplies observations, candidate generation, action validation, verification, signals, and optional reasoners. [`examples/skills`](examples/skills) contains example Agent Skills packages. The package surface is exported from [`src/index.ts`](src/index.ts).
 
@@ -32,7 +43,7 @@ Skill instruction loading, skill selection, and executable registration are sepa
 ## Next milestones
 
 1. Add a real structured-state adapter and a contrasting turn-based adapter. RCT2 is in the target set, with integration feasibility to assess before committing to an approach.
-2. Add concrete model-provider adapters with structured output validation, cost and latency reporting, and bounded tool access. Preserve the same coordinator interface for local and remote providers.
+2. Extend the AI SDK adapter with bounded, role-specific tools and dollar cost reporting. Preserve the same coordinator interface for local and remote providers.
 3. Let long-running skills advance while observations and interrupts continue. Add explicit skill ownership and cancellation handoff in the coordinator.
 4. Wire run-end episode recording and evidence-based consolidation into the session lifecycle. Keep research runs pinned to a selected memory snapshot.
 5. Use the evaluation harness for matched runs across architectures, with game-specific success metrics and shared cost/latency reporting.
