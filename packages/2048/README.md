@@ -2,14 +2,14 @@
 
 A visible-browser Gamebot bridge for the **separate** [open-source 2048 game](https://github.com/gabrielecirulli/2048). The game source is not bundled in this package. This integration uses `@gamebot/browser` for keyboard input and reads the current board, score, and terminal flags without screenshots. Gamebot's `SessionRuntime` chooses and verifies each move.
 
-Clone the game beside Gamebot, then install and build Gamebot's workspaces:
+Install Gamebot's dependencies, then run the demo:
 
 ```sh
-git clone --depth 1 https://github.com/gabrielecirulli/2048.git ../2048
 npm install
-npx playwright install chromium
-npm run 2048 -- --game-dir="$(realpath ../2048)"
+npm run 2048
 ```
+
+On first run, the bridge downloads a pinned copy of the original game into your user cache and installs Playwright's Chromium if needed. Neither is bundled into Gamebot. You can use an existing game checkout instead with `--game-dir=/path/to/2048` or `GAMEBOT_2048_DIR`.
 
 The command opens the game in a visible Chromium window, plays up to 100 moves toward a 128 tile, and leaves the result visible until Ctrl+C. Pass `--steps=200`, `--target=256`, or `--seed=42` to change the run. The default policy is a deterministic slide heuristic. Add `--ai` and set `GAMEBOT_REFLEX_MODEL` or `GAMEBOT_MODEL` to an AI Gateway model ID to let a model choose among legal directions; this uses paid model calls when configured.
 

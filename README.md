@@ -1,6 +1,6 @@
 # Gamebot
 
-Gamebot is an early TypeScript runtime for comparing ways to play games with fast decisions, optional slower reasoning, and executable skills. Local path, Chess, and Snake games are runnable in this workspace. The 2048 browser bridge controls a separate local checkout of the game; other external-game bridges require their games to be installed and running separately.
+Gamebot is an early TypeScript runtime for comparing ways to play games with fast decisions, optional slower reasoning, and executable skills. Local path, Chess, and Snake games are runnable in this workspace. The 2048 browser bridge downloads a separate copy of the game on first run; other external-game bridges require their games to be installed and running separately.
 
 ## Run the slice
 
@@ -20,13 +20,13 @@ npm run snake -- --ai
 npm run snake:window
 ```
 
-To watch Gamebot control a **separate browser game**, clone the original [2048 game](https://github.com/gabrielecirulli/2048) outside this repository, install Playwright's Chromium, and run the [`@gamebot/2048`](packages/2048) bridge:
+To watch Gamebot control the **separate [2048 game](https://github.com/gabrielecirulli/2048)** in a browser window, run the [`@gamebot/2048`](packages/2048) bridge:
 
 ```sh
-git clone --depth 1 https://github.com/gabrielecirulli/2048.git ../2048
-npx playwright install chromium
-npm run 2048 -- --game-dir="$(realpath ../2048)"
+npm run 2048
 ```
+
+The first run downloads the game into your user cache and installs Chromium if needed. Use `--game-dir=/path/to/2048` only if you prefer an existing checkout.
 
 The bridge packages are [`@gamebot/chess`](packages/chess), [`@gamebot/snake`](packages/snake), [`@gamebot/browser`](packages/browser), [`@gamebot/2048`](packages/2048), [`@gamebot/openrct2`](packages/openrct2), and [`@gamebot/runebench`](packages/runebench). Snake's `--window` option serves a read-only local browser viewer and keeps the final board visible until Ctrl+C. The browser bridge controls separately hosted HTML5 games in a visible Playwright page, using game-specific DOM or structured state; screenshots are optional. The 2048 package is the first game-specific browser integration. OpenRCT2 connects to the separately installed openrct2-bridge plugin; RuneBench accepts the SDK and bot supplied by a separate rs-sdk checkout. OpenRCT2 and RuneBench have not been exercised against live games in this workspace. Runs write traces under `.gamebot/traces/` in the current working directory. The root package `@gamebot/core` has no game dependency. These packages are available locally through npm workspaces; they have not been published to a registry.
 

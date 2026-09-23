@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { access, mkdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { FileTraceSink, SessionRuntime, aiSdkReflex } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
@@ -12,9 +15,34 @@ function argument(name: string): string | undefined {
   return process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
 }
 
+const run = promisify(execFile);
+const gameRevision = "478b6ec346e3787f589e4af751378d06ded4cbbc";
+
+async function defaultGameIndex(): Promise<string> {
+  const cacheRoot = process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache");
+  const cacheParent = join(cacheRoot, "gamebot", "2048");
+  const gamePath = join(cacheParent, gameRevision);
+  const index = join(gamePath, "index.html");
+  if (await access(index).then(() => true, () => false)) return index;
+
+  await mkdir(cacheParent, { recursive: true });
+  const downloadPath = await mkdtemp(join(cacheParent, ".download-"));
+  console.log("Downloading the original 2048 game to the Gamebot cache...");
+  try {
+    await run("git", ["init", "-q", downloadPath]);
+    await run("git", ["-C", downloadPath, "remote", "add", "origin", "https://github.com/gabrielecirulli/2048.git"]);
+    await run("git", ["-C", downloadPath, "fetch", "-q", "--depth=1", "origin", gameRevision]);
+    await run("git", ["-C", downloadPath, "checkout", "-q", "--detach", "FETCH_HEAD"]);
+    await rename(downloadPath, gamePath);
+  } finally {
+    await rm(downloadPath, { recursive: true, force: true });
+  }
+  await access(index);
+  return index;
+}
+
 const gameDir = argument("game-dir") ?? process.env.GAMEBOT_2048_DIR;
-if (!gameDir) throw new Error("Set --game-dir=/path/to/separate/2048 checkout or GAMEBOT_2048_DIR");
-const gameIndex = join(resolve(gameDir), "index.html");
+const gameIndex = gameDir ? join(resolve(gameDir), "index.html") : await defaultGameIndex();
 await access(gameIndex);
 const toolDrafts = resolve(".gamebot", "games", "2048", "tools");
 await mkdir(toolDrafts, { recursive: true });
@@ -29,10 +57,21 @@ const useAi = process.argv.includes("--ai");
 const model = useAi ? process.env.GAMEBOT_REFLEX_MODEL ?? process.env.GAMEBOT_MODEL : undefined;
 if (useAi && !model) throw new Error("Set GAMEBOT_REFLEX_MODEL or GAMEBOT_MODEL for --ai");
 
-const browser = await chromium.launch({
+const browserOptions = {
   headless,
   ...(process.env.GAMEBOT_CHROME ? { executablePath: process.env.GAMEBOT_CHROME } : {}),
-});
+};
+let browser;
+try {
+  browser = await chromium.launch(browserOptions);
+} catch (error) {
+  if (process.env.GAMEBOT_CHROME || !String(error).includes("Executable doesn't exist")) throw error;
+  console.log("Installing Chromium for the 2048 window...");
+  await run(process.platform === "win32" ? "npx.cmd" : "npx", ["playwright", "install", "chromium"], {
+    shell: process.platform === "win32",
+  });
+  browser = await chromium.launch(browserOptions);
+}
 let stop = false;
 process.once("SIGINT", () => { stop = true; });
 try {
