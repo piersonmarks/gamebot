@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFile, readdir, realpath } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { cp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -61,6 +62,18 @@ if (!id || args.includes("--help") || args.includes("--list")) {
     const coreCode = await run(process.execPath, [npm, "run", "build:core"], root);
     const buildCode = coreCode || await buildWorkspace(game.directory, game.manifest);
     if (buildCode !== 0) process.exitCode = buildCode;
-    else process.exitCode = await run(process.execPath, [resolve(game.directory, autoplay ? game.researchBin : game.bin), ...(autoplay ? [] : game.defaultArgs), ...options], game.directory);
+    else {
+      const dataDirectory = join(root, ".gamebot");
+      const legacyDirectory = join(game.directory, ".gamebot");
+      const imported = join(dataDirectory, `.imported-${id}`);
+      // Preserve old package-local saves, without replacing root saves or changing cold-start shared state.
+      if (!options.includes("--cold-start") && !existsSync(imported) && existsSync(legacyDirectory)) {
+        await cp(legacyDirectory, dataDirectory, { recursive: true, force: false, errorOnExist: false });
+        await writeFile(imported, `${await realpath(legacyDirectory)}\n`);
+        console.log(`Imported missing saves from ${legacyDirectory}; originals are retained.`);
+      }
+      console.log(`GameBot data: ${dataDirectory}`);
+      process.exitCode = await run(process.execPath, [resolve(game.directory, autoplay ? game.researchBin : game.bin), ...(autoplay ? [] : game.defaultArgs), ...options], root);
+    }
   }
 }

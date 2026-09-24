@@ -22,7 +22,7 @@
     "watch": "npm run build:core && node dist/demo.js --watch",
     "watch:ai": "npm run build:core && node dist/demo.js --watch --ai",
     "chess": "npm run game -- --game=chess",
-    "snake": "npm run build:core && npm run build -w @gamebot/snake && npm run play -w @gamebot/snake -- --watch",
+    "snake": "npm run game -- --game=snake",
     "snake:window": "npm run game -- --game=snake",
     "2048": "npm run game -- --game=2048"
   },
