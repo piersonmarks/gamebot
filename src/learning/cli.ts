@@ -6,7 +6,12 @@ import { runResearch } from "./research.js";
 import { openGameWindow, startResearchViewer, type ResearchViewerOptions } from "./viewer.js";
 
 export function learningArgument(name: string): string | undefined {
-  return process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const index = process.argv.findIndex(arg => arg === `--${name}` || arg.startsWith(`--${name}=`));
+  if (index < 0) return undefined;
+  if (process.argv[index] !== `--${name}`) return process.argv[index]!.slice(name.length + 3);
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith("--")) throw new Error(`--${name} requires a value`);
+  return value;
 }
 
 export function learningConsole(verbose = false): LearningReporter {

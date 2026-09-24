@@ -28,10 +28,12 @@ Astra and Sol generate structured plans; [Jev](https://vercel.com/ai-gateway/mod
 npm run game -- --game=2048 --verbose
 npm run autoplay -- --game=2048 --fresh --rounds=5 --games=3 --verbose
 npm run game -- --game=2048 --policy=latest
+npm run autoplay -- --game=2048 --goal="maximize score"
+npm run game -- --game=2048 --goal="maximize score" --policy=latest
 npm run autoplay -- --game=snake --fresh --rounds=5 --games=3
 ```
 
-Ordinary play starts a new AI player unless `--policy=latest` or an explicit artifact path is supplied. It does not read prior research implicitly. `--policy=builtin` explicitly selects the older hand-written heuristic for an offline comparison. In 2048, explicit legacy weight JSON paths also remain playable; `--policy=latest` falls back to a legacy `active-policy.json` only if no new player artifact exists.
+Ordinary play starts a new AI player unless `--policy=latest` or an explicit artifact path is supplied. It does not read prior research implicitly. `--policy=builtin` explicitly selects the older hand-written heuristic for an offline comparison. In 2048, explicit legacy weight JSON paths also remain playable; `--policy=latest` falls back to a legacy `active-policy.json` only for the default 2048 win goal if no matching new player artifact exists.
 
 Research resumes the latest evaluated player and prior findings by default. `--fresh` starts from rules and an AI player without loading prior policies or findings. This is a new experiment, and its selected player replaces the latest pointer when it completes successfully. `--policy=/absolute/path/player.json` selects a particular starting revision. Policies carry the game ID, rule version and goal; mismatches fail rather than silently replaying a policy for another task.
 
@@ -92,11 +94,11 @@ Initial cold-start setup requires `kind: "ai"`, `code: null` and `jev: null`. Af
 
 New artifacts use `gamebot-player-v2`; existing `gamebot-player-v1` files load with `jev: null`. The Jev source participates in the policy ID, so each revision and its evaluation evidence remain distinguishable. Verbose output and research journals include the exact evaluation request, returned answers and selected action.
 
-The runtime and game evaluator remain outside the editable player. The candidate is evaluated on matched training seeds. An improvement must also beat the incumbent on fresh matched validation seeds. A final, previously unused seed set compares the selected candidate with the starting player before publication. More wins outrank score; candidates with execution errors cannot be promoted. Runtime and model use are reported separately. These are empirical comparisons with stochastic models, not statistical proof of superiority or guarantees of optimal play; increase `--games` for stronger evidence.
+The runtime and game evaluator remain outside the editable player. The candidate is evaluated on matched training seeds. An improvement must also beat the incumbent on fresh matched validation seeds. A final, previously unused seed set compares the selected candidate with the starting player before publication. More wins outrank score; candidates with execution errors cannot be promoted. For 2048, `--goal="win"` (default) stops at the target tile. `--goal="maximize score"` continues past 2048 and compares raw scores at game over or the turn limit; there is no binary win for that objective. Use consistent turn budgets for comparable score experiments. Speed and model cost are not selection objectives. Runtime and model use are reported separately. These are empirical comparisons with stochastic models, not statistical proof of superiority or guarantees of optimal play; increase `--games` for stronger evidence.
 
 ## Evidence and extension
 
-Artifacts and complete transition journals live under `.gamebot/research/<game>/<run>/`. The latest evaluated artifact is `.gamebot/games/<game>/latest-player.json`. A separate research ledger retains hypotheses, diagnoses, acceptance/rejection and errors across experiments. Research evidence is not automatically treated as validated general-purpose memory or promoted across games. Ordinary gameplay traces include strategy/tactic updates, reflex summaries, code-versus-evaluation selection and model token usage. The launcher runs from the selected package directory, so these paths are relative to that directory.
+Artifacts and complete transition journals live under `.gamebot/research/<game>/<run>/`. The latest evaluated artifact is `.gamebot/games/<game>/goals/<goal-key>/latest-player.json`, keyed by the goal ID and description. `--policy=latest` resolves the current goal; older game-wide artifacts remain readable only for matching goals. A separate research ledger retains hypotheses, diagnoses, acceptance/rejection and errors across experiments. Research evidence is not automatically treated as validated general-purpose memory or promoted across games. Ordinary gameplay traces include strategy/tactic updates, reflex summaries, code-versus-evaluation selection and model token usage. The launcher runs from the selected package directory, so these paths are relative to that directory.
 
 To add a game, implement `LearningGame<State, Action>`:
 

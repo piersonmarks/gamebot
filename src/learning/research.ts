@@ -244,7 +244,7 @@ ${judgmentContract}`, {
   signal.throwIfAborted();
   // Only evaluated, error-free policies may become latest. Ordinary play never loads this implicitly.
   if (!options.coldStart && selectedTest.metrics.errors === 0) {
-    const latest = latestPlayerPath(game.id);
+    const latest = latestPlayerPath(game.id, game.goal);
     await mkdir(dirname(latest), { recursive: true });
     const temporary = `${latest}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(artifact(selected), null, 2) + "\n");

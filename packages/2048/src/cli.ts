@@ -5,15 +5,11 @@ import { resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { FileTraceSink, SessionRuntime, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
-  playerModelsFromEnv, loadPlayer, type PlayerPolicy, type TraceEvent, type LearningEvent } from "@gamebot/core";
+  playerModelsFromEnv, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
 import { learning2048 } from "./learning.js";
 import { Browser2048Session } from "./browser.js";
-
-function argument(name: string): string | undefined {
-  return process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
-}
 
 const browser = new Browser2048Session(argument("game-dir"));
 const toolDrafts = resolve(".gamebot", "games", "2048", "tools");
@@ -29,7 +25,9 @@ const pace = Number(argument("pace") ?? 200);
 const policyPath = argument("policy");
 const useAi = process.argv.includes("--ai");
 if (useAi && policyPath !== undefined) throw new Error("Use either --ai or --policy, not both");
-const definition = learning2048(seed => browser.create(seed), target);
+const definition = learning2048(seed => browser.create(seed, definition.goal.id === "maximize-score"), target, argument("goal"));
+const maximizeScore = definition.goal.id === "maximize-score";
+if (maximizeScore && argument("target") !== undefined) throw new Error('--target only applies to --goal="win"');
 let policy: Policy2048 | undefined;
 let learnedPolicy: PlayerPolicy | undefined;
 if (policyPath === "builtin") policy = defaultPolicy;
@@ -37,6 +35,7 @@ else if (policyPath === "latest") {
   try { learnedPolicy = await loadPlayer(policyPath, definition); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (maximizeScore || target !== 2048) throw error;
     policy = policySchema.parse(JSON.parse(await readFile(resolve(".gamebot", "games", "2048", "active-policy.json"), "utf8")));
   }
 }
@@ -82,7 +81,7 @@ const onInterrupt = () => {
 process.once("SIGINT", onInterrupt);
 try {
   await browser.open(headless, undefined, onInterrupt);
-  await browser.create(seed);
+  await browser.create(seed, maximizeScore);
   const page = browser.page;
 
   const visionUsage = { calls: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0 };
@@ -104,7 +103,7 @@ try {
     const { uncertain, ...state } = await readVision(await page.screenshot({ type: "png" }), visionAbort.signal);
     if (uncertain) throw new Error("Vision could not read the 2048 board confidently");
     return state;
-  } : undefined);
+  } : undefined, maximizeScore);
   const runId = randomUUID();
   const trace = new FileTraceSink(resolve(".gamebot", "traces", `2048-${seed}-${runId}.jsonl`));
   const liveTrace = { async record(event: TraceEvent) {
@@ -148,7 +147,7 @@ try {
     trace: liveTrace,
   }, definition.goal);
 
-  console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; target ${target}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
+  console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
   console.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
   let finalState: Game2048State | undefined;
   let moves = 0;
@@ -156,7 +155,7 @@ try {
   try {
     finalState = (await game.observe()).state;
     for (let step = 0; (steps === undefined || step < steps) && !stop; step++) {
-      if (finalState.over || finalState.won || Math.max(...finalState.board.flat()) >= target) break;
+      if (definition.outcome(finalState).done) break;
       if (verbose) console.log(`[verbose] turn ${step + 1} board: ${JSON.stringify(finalState.board)}`);
       playerSequence = step + 1;
       const result = await session.step();
@@ -176,9 +175,8 @@ try {
   } finally { await session.finish(); }
   const maxTile = finalState ? Math.max(...finalState.board.flat()) : 0;
   if (stop) stopReason = "interrupted";
-  else if (finalState?.won) stopReason = "won";
+  else if (finalState && definition.outcome(finalState).won) stopReason = finalState.won ? "won" : "target-reached";
   else if (finalState?.over) stopReason = "game-over";
-  else if (maxTile >= target) stopReason = "target-reached";
   else if (stopReason === "no-action" && steps !== undefined && moves >= steps) stopReason = "step-limit";
   const screenshotPath = headless ? resolve(".gamebot", "screenshots", `2048-${seed}-${runId}.png`) : undefined;
   if (screenshotPath && finalState && !page.isClosed()) {
@@ -187,9 +185,10 @@ try {
     await page.screenshot({ path: screenshotPath });
   }
   console.log(JSON.stringify({
+    goal: definition.goal,
     score: finalState?.score,
     maxTile,
-    reachedTarget: maxTile >= target,
+    ...(!maximizeScore ? { reachedTarget: maxTile >= target } : {}),
     over: finalState?.over,
     stopReason,
     tracePath: trace.path,

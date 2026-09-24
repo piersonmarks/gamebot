@@ -84,7 +84,7 @@ async function readGame(page: Page): Promise<Game2048State> {
 
 export class Game2048 implements GameAdapter<Game2048State, Direction> {
   private readonly browser: BrowserGameBridge<Game2048State>;
-  constructor(private readonly page: Page, private readonly visualState?: () => Promise<Game2048State>) {
+  constructor(private readonly page: Page, private readonly visualState?: () => Promise<Game2048State>, private readonly continueAfterWin = false) {
     this.browser = new BrowserGameBridge(page, { extractState: () => visualState ? visualState() : readGame(page) });
   }
 
@@ -99,10 +99,18 @@ export class Game2048 implements GameAdapter<Game2048State, Direction> {
   }
 
   validateAction(action: Direction, observation: Observation<Game2048State>): boolean {
-    return !observation.state.over && !observation.state.won && previewMove(observation.state.board, action).changed;
+    return !observation.state.over && (this.continueAfterWin || !observation.state.won) && previewMove(observation.state.board, action).changed;
   }
 
   async execute(action: Direction, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (this.continueAfterWin && await this.page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem("gameState") ?? "null");
+      return saved?.won && !saved.keepPlaying;
+    })) {
+      await this.page.locator(".game-message.game-won .keep-playing-button").click();
+      signal.throwIfAborted();
+    }
     const before = this.visualState ? undefined : await this.page.evaluate(() => localStorage.getItem("gameState"));
     await this.browser.execute({ type: "key", key: keys[action] }, signal);
     if (signal.aborted) return;

@@ -7,7 +7,12 @@ if (learningArgument("observe") !== undefined && learningArgument("observe") !==
   throw new Error("2048 research currently uses --observe=dom; vision observation is available with ordinary play.");
 }
 const browser = new Browser2048Session(learningArgument("game-dir"));
-await runResearchCli(learning2048(seed => browser.create(seed), Number(learningArgument("target") ?? 2048)), {
+const definition = learning2048(seed => browser.create(seed, definition.goal.id === "maximize-score"),
+  Number(learningArgument("target") ?? 2048), learningArgument("goal"));
+if (definition.goal.id === "maximize-score" && learningArgument("target") !== undefined) {
+  throw new Error('--target only applies to --goal="win"');
+}
+await runResearchCli(definition, {
   async open({ headless, signal, onClose }) {
     await browser.open(headless, signal, onClose);
     return browser;

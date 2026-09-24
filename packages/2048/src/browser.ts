@@ -90,7 +90,7 @@ export class Browser2048Session {
     }
   }
 
-  async create(seed: number): Promise<Game2048> {
+  async create(seed: number, continueAfterWin = false): Promise<Game2048> {
     if (!Number.isSafeInteger(seed)) throw new Error("2048 seed must be an integer");
     await this.page.goto(this.gameUrl);
     await this.page.locator(".tile-container .tile").first().waitFor();
@@ -113,7 +113,7 @@ export class Browser2048Session {
     try { await this.page.keyboard.press("r"); }
     finally { this.page.off("dialog", acceptRestart); }
     await this.page.waitForFunction(() => JSON.parse(localStorage.getItem("gameState") ?? "null")?.score === 0);
-    return new Game2048(this.page);
+    return new Game2048(this.page, undefined, continueAfterWin);
   }
 
   async close(): Promise<void> {

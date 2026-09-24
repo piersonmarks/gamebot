@@ -53,15 +53,28 @@ export function policyId(policy: PlayerPolicy): string {
   return createHash("sha256").update(JSON.stringify(playerPolicySchema.parse(policy))).digest("hex").slice(0, 16);
 }
 
-export function latestPlayerPath(gameId: string): string {
+export function latestPlayerPath(gameId: string, goal?: Goal): string {
   if (!/^[a-z0-9-]+$/.test(gameId)) throw new Error("Invalid game ID");
+  if (goal) {
+    const key = createHash("sha256").update(JSON.stringify([goal.id, goal.description])).digest("hex").slice(0, 16);
+    return resolve(".gamebot", "games", gameId, "goals", key, "latest-player.json");
+  }
   return resolve(".gamebot", "games", gameId, "latest-player.json");
 }
 
 export async function loadPlayer<State, Action>(selection: string, game: LearningGame<State, Action>): Promise<PlayerPolicy> {
   if (!selection) throw new Error("--policy requires latest or a file path");
-  const path = selection === "latest" ? latestPlayerPath(game.id) : resolve(selection);
-  const artifact = playerArtifactSchema.parse(JSON.parse(await readFile(path, "utf8")));
+  const path = selection === "latest" ? latestPlayerPath(game.id, game.goal) : resolve(selection);
+  let contents: string;
+  try { contents = await readFile(path, "utf8"); }
+  catch (error) {
+    if (selection !== "latest" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // Older installations had one latest policy per game. Reuse it only for its matching goal.
+    const legacy = playerArtifactSchema.parse(JSON.parse(await readFile(latestPlayerPath(game.id), "utf8")));
+    if (legacy.goal.id !== game.goal.id || legacy.goal.description !== game.goal.description) throw error;
+    contents = JSON.stringify(legacy);
+  }
+  const artifact = playerArtifactSchema.parse(JSON.parse(contents));
   if (artifact.gameId !== game.id || artifact.gameVersion !== game.version ||
       artifact.goal.id !== game.goal.id || artifact.goal.description !== game.goal.description) {
     throw new Error("Policy game, version or goal does not match this run");
