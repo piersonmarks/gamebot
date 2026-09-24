@@ -12,7 +12,7 @@ type ViewerDetail = {
   event?: ViewerDetail; state?: unknown; after?: unknown; finalState?: unknown;
   strategy?: string; instruction?: string; policy?: { strategy: string };
   role?: string; set?: string; seed?: number; policyId?: string; step?: number; steps?: number;
-  action?: unknown; error?: string; stopReason?: string; round?: number; accepted?: boolean; message?: string;
+  reason?: string; progress?: number; nextReviewIn?: number; retained?: boolean; action?: unknown; error?: string; stopReason?: string; round?: number; accepted?: boolean; message?: string;
 };
 
 /** Open the existing default browser; never install or download a browser. */
@@ -53,7 +53,7 @@ h2:first-child{margin-top:0}#phase{font-weight:650;font-size:20px;margin:0}
 <h2>Current tactic</h2><p id="tactic">Waiting for the tactician…</p>
 <h2>Last move</h2><p id="action">No moves yet</p>
 <h2>Recent attempts</h2><ol id="history"></ol></aside></div>
-<footer>Live research games · Each attempt starts a new board. Ctrl+C in the terminal stops the run.</footer>
+<footer>Live learning · Reviews keep the current world open. Ctrl+C in the terminal stops the run.</footer>
 </main><script>
 ${options.render}
 const stream=new EventSource('/events');
@@ -103,7 +103,7 @@ stream.onmessage=({data})=>{
           episodes++;
           view.state = detail.state; view.action = "No moves yet"; view.strategy = detail.strategy ?? ""; view.tactic = "";
           view.phase = "Playing";
-          view.meta = `Attempt ${episodes} · ${envelope.set === "test" ? "Final evaluation" : envelope.set === "validation" ? "Validation" : "Training"} · seed ${envelope.seed}`;
+          view.meta = envelope.set === undefined ? `Game ${episodes} · Continual learning` : `Attempt ${episodes} · ${envelope.set === "test" ? "Final evaluation" : envelope.set === "validation" ? "Validation" : "Training"} · seed ${envelope.seed}`;
           break;
         case "episode.step": view.state = detail.after; view.phase = "Playing"; view.action = `Move ${detail.step}: ${JSON.stringify(detail.action)}`; break;
         case "model.started": view.phase = `${detail.role === "reflex" ? "Choosing a move" : detail.role === "strategist" ? "Strategist is planning" : "Tactician is planning"}…`; break;
@@ -114,6 +114,14 @@ stream.onmessage=({data})=>{
           view.state = detail.finalState; view.phase = detail.error ? `Attempt failed: ${detail.error}` : `Attempt finished: ${detail.stopReason}`;
           view.history = [`Attempt ${episodes}: ${detail.stopReason} · ${detail.steps} moves`, ...view.history].slice(0, 6);
           break;
+        case "learning.window":
+          view.state = detail.after; view.phase = `Reviewing: ${detail.reason}`;
+          view.history = [`${detail.reason}: ${detail.steps} moves · progress ${detail.progress}`, ...view.history].slice(0, 6); break;
+        case "learning.proposal": view.phase = "Checking a proposed revision"; break;
+        case "learning.policy-activated": view.phase = "Trying a revised player in this world"; break;
+        case "learning.trial-reviewed": view.phase = detail.retained ? "Retaining the live trial" : "Restoring the previous player"; break;
+        case "learning.reviewed": view.phase = "Playing"; view.meta = `Next learning review in up to ${detail.nextReviewIn} decisions`; break;
+        case "learning.saved": view.phase = "Learning saved"; break;
         case "research.proposal": view.phase = `Testing revision ${detail.round}`; break;
         case "research.revision": view.phase = detail.accepted ? "Improved policy accepted" : "Keeping the previous policy"; break;
         case "research.completed": view.phase = "Research complete"; break;

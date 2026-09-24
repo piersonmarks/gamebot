@@ -17,6 +17,14 @@ export interface LearningGame<State, Action> {
   goalOptions?: Record<string, { description: string; objective: "achievement" | "score";
     outcome(state: State): { done: boolean; won: boolean; score: number } }>;
 
+  /** Persistent worlds are never recreated automatically at a learning checkpoint or terminal event. */
+  continuity?: "episodic" | "persistent";
+  /** Attach to the existing world on process resume; must not reset it. */
+  reconnect?(): GameAdapter<State, Action> | Promise<GameAdapter<State, Action>>;
+  /** Fixed bridge-owned feedback. comparisonKey asserts comparable opportunities, not identical worlds. */
+  learningFeedback?(window: { before: State; after: State; steps: number; elapsedMs: number }): {
+    progress: number; comparisonKey?: string; milestone?: string; setback?: string;
+  };
   create(seed: number): GameAdapter<State, Action> | Promise<GameAdapter<State, Action>>;
   candidates: CandidateGenerator<State, Action>;
   verifier: Verifier<State, Action>;

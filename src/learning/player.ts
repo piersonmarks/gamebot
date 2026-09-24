@@ -45,6 +45,14 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
     this.policy = options.policy && playerPolicySchema.parse(options.policy);
   }
 
+  /** Called only between verified actions by the learning session. */
+  replacePolicy(policy: PlayerPolicy): void {
+    this.policy = playerPolicySchema.parse(policy);
+    this.strategy = this.policy.strategy;
+    this.tactic = undefined;
+    this.nextStrategist = this.nextTactician = 0;
+  }
+
   async choose(context: DecisionContext<State>, candidates: readonly Candidate<Action>[], signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     if (this.goalRevision !== undefined && this.goalRevision !== context.authority.goalRevision) {

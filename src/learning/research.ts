@@ -2,14 +2,13 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { z } from "zod";
 import { SessionRuntime } from "../core/index.js";
 import { HierarchicalPlayer, initializePlayer } from "./player.js";
 import { ModelBudgetExceeded, ModelProviderError, PlayerModelRunner, type LearningReporter, type LearningEvent } from "./models.js";
-import { codeContract, latestPlayerPath, loadPlayer, playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
+import { latestPlayerPath, loadPlayer, playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
 import type { GoalEvaluation } from "./goal.js";
 import { preflightPolicy } from "./preflight.js";
-import { judgmentContract } from "./judgment.js";
+import { proposeRevision, type Revision } from "./revision.js";
 
 export interface EpisodeResult {
   seed: number;
@@ -134,6 +133,7 @@ export async function runResearch<State, Action>(options: {
   setupEvents?: LearningEvent[];
 }) {
   const { game, models, signal } = options;
+  if (game.continuity === "persistent") throw new Error("Matched benchmarks require resettable episodes; use continual learning for persistent worlds");
   if (game.requestedGoal && game.evaluation?.request !== game.requestedGoal) throw new Error("Resolve the requested goal before starting research");
   if (options.resume && options.policy) throw new Error("Resume cannot replace the saved baseline policy");
   if (options.coldStart && options.policy) throw new Error("Cold-start experiments cannot use a supplied policy");
@@ -152,7 +152,7 @@ export async function runResearch<State, Action>(options: {
     maxSteps: options.maxSteps, firstSeed: options.firstSeed, maxCalls: models.maxCalls,
     models: Object.fromEntries(Object.entries(models.models).map(([role, model]) => [role, typeof model === "string" ? model : model.modelId])),
   };
-  type Proposal = { diagnosis: string; alternatives: string[]; hypothesis: string; policy: PlayerPolicy };
+  type Proposal = Revision;
   type Checkpoint = {
     completed?: boolean; baseline?: PlayerPolicy; proposals: Record<string, Proposal>; results: Record<string, EpisodeResult>;
     preflights: Record<string, Awaited<ReturnType<typeof preflightPolicy>>>;
@@ -260,24 +260,8 @@ export async function runResearch<State, Action>(options: {
     const tried = new Set([policyId(champion)]);
     for (let round = 1; round <= options.rounds; round++) {
       signal.throwIfAborted();
-      const proposal = checkpoint.proposals[round] ?? await models.ask("strategist", z.object({
-        diagnosis: z.string(), alternatives: z.array(z.string()).min(2).max(5),
-        hypothesis: z.string(), policy: playerPolicySchema,
-      }), `You are the research strategist improving a three-tier game player. Investigate the gameplay evidence and failures.
-Enumerate competing explanations and approaches; propose one executable experiment. You can change strategy, tactical/reflex instructions,
-review intervals, the Jev questions and supporting computations, or replace AI leaf decisions with generated code or a hybrid. Choose the implementation based on your findings.
-Keep the user goal authoritative. Do not assume a win or optimality. Errors, rejected hypotheses and computation cost are evidence.
-Inspect recorded judgment requests, answers, selections and their observed outcomes. Distinguish missing context, bad question design,
-composition-code errors and model errors. You may add, revise or remove questions and change preparation/selection code as one experiment.
-A win is evidence, not the end of research: preserve goal success while reducing decisions and model calls.
-Distinguish provider outages from game losses and program failures. Do not infer policy quality from an outage.
-Available checks: bounded generated-code/Jev contract checks on recorded states, followed by the configured real-game trials.
-There is no arbitrary test runner or simulator: do not claim that a proposed fixture or larger seed count was executed.
-Autonomous code calls higher tiers only when it explicitly requests a review; choose where supervision can affect behavior.
-Avoid repeating tried policies. Only measured performance on fresh matched games can promote a revision.
-${codeContract}
-${judgmentContract}`, {
-        rules: game.rules, goal: game.goal, evaluation: game.evaluation, budget: { gamesPerSet: options.games, rounds: options.rounds, maxSteps: options.maxSteps, remainingModelCalls: models.maxCalls - models.usage.calls }, currentPolicy: champion, training: championTrain,
+      const proposal = checkpoint.proposals[round] ?? await proposeRevision(models, {
+        mode: "benchmark", rules: game.rules, goal: game.goal, evaluation: game.evaluation, budget: { gamesPerSet: options.games, rounds: options.rounds, maxSteps: options.maxSteps, remainingModelCalls: models.maxCalls - models.usage.calls }, currentPolicy: champion, training: championTrain,
         // Keep detailed receipts for recent experiments, summaries for older ones.
         history: history.map((item, index) => {
           if (index >= history.length - 3) return item;
@@ -285,6 +269,12 @@ ${judgmentContract}`, {
           return summary;
         }), tried: [...tried], round,
       }, signal);
+      if (!proposal.policy) {
+        checkpoint.proposals[round] = proposal;
+        await persist();
+        await report({ type: "research.revision", detail: { round, accepted: false, reason: "no-change", ...proposal } });
+        continue;
+      }
       playerPolicySchema.parse(proposal.policy);
       checkpoint.proposals[round] = proposal;
       await persist();

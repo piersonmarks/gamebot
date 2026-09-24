@@ -2,8 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { FileTraceSink, SessionRuntime, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv,
-  loadPlayer, learningArgument, openGameWindow, type LearningEvent } from "@gamebot/core";
+import { FileTraceSink, SessionRuntime, ContinualLearningSession, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv,
+  loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions } from "@gamebot/core";
 import { SnakeGame, foodDistance, wouldCollide, type SnakeState, type Direction } from "./game.js";
 import { learningSnake } from "./learning.js";
 import { startViewer } from "./viewer.js";
@@ -27,15 +27,15 @@ const verbose = process.argv.includes("--verbose");
 const viewer = process.argv.includes("--headless") ? undefined : await startViewer();
 const game = new SnakeGame(seed, Number(learningArgument("target") ?? 5));
 const trace = new FileTraceSink(resolve(".gamebot", "traces", `snake-${seed}-${randomUUID()}.jsonl`));
-let session: SessionRuntime<SnakeState, Direction>;
+let session: SessionRuntime<SnakeState, Direction> | ContinualLearningSession<SnakeState, Direction> | undefined;
 let steps = 0;
 const report = async (event: LearningEvent) => {
   await trace.record({ sequence: steps + 1, time: new Date().toISOString(), type: event.type,
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 }, detail: event.detail });
-  if (verbose) console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
+  if (verbose || event.type === "learning.created" || event.type === "learning.saved") console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
 };
 const models = modelConfig ? new PlayerModelRunner(modelConfig, maxCalls, report) : undefined;
-session = new SessionRuntime({
+const sessionOptions: SessionOptions<SnakeState, Direction> = {
   adapter: game, candidates: definition.candidates, verifier: definition.verifier,
   reflex: builtin ? {
     choose(context, candidates) {
@@ -45,13 +45,18 @@ session = new SessionRuntime({
     },
   } : new HierarchicalPlayer({ game: definition, policy, models: models!, report }),
   trace,
-}, definition.goal);
+};
 let interrupted = false;
 let resolveStop!: () => void;
 const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
-const stop = () => { interrupted = true; session.stop(); resolveStop(); };
+const controller = new AbortController();
+const stop = () => { interrupted = true; controller.abort(); session?.stop(); resolveStop(); };
 process.once("SIGINT", stop);
 try {
+  session = builtin || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
+    : await ContinualLearningSession.open({ game: definition, adapter: game, models: models!, policy, seed,
+      signal: controller.signal, trace, report, coldStart: process.argv.includes("--cold-start"),
+      learnEvery: Number(learningArgument("learn-every") ?? 64), learnMs: Number(learningArgument("learn-ms") ?? 300000) });
   if (viewer) {
     console.log(`Watch Gamebot at ${viewer.url}. Ctrl+C stops play and closes the viewer.`);
     openGameWindow(viewer.url);
@@ -62,12 +67,13 @@ try {
   while (steps < turns && !definition.outcome(state).done && !interrupted) {
     const result = await session.step();
     state = (result.after ?? await game.observe()).state;
-    if (!result.candidate) break;
+    if (!result.candidate) { if (session instanceof ContinualLearningSession) continue; break; }
     steps++;
     viewer?.publish(state);
     if (watch) console.log(`Tick ${state.tick}; food ${state.foodEaten}/${game.targetFood}\n${state.board}\n`);
     if (pace && (viewer || watch)) await delay(pace);
   }
+  if (!interrupted && session instanceof ContinualLearningSession) await session.review();
   await session.finish();
   console.log(JSON.stringify({ ...definition.outcome(state), steps, status: interrupted ? "interrupted" : game.status(),
     tracePath: trace.path, modelUsage: models?.usage }, null, 2));
@@ -75,7 +81,7 @@ try {
 } catch (error) {
   if (!interrupted) throw error;
 } finally {
-  await session.finish();
+  await session?.finish();
   process.removeListener("SIGINT", stop);
   await viewer?.close();
 }

@@ -4,8 +4,8 @@ import { mkdir, readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { FileTraceSink, SessionRuntime, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
-  playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent } from "@gamebot/core";
+import { FileTraceSink, SessionRuntime, ContinualLearningSession, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
+  playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
 import { learning2048 } from "./learning.js";
@@ -51,7 +51,7 @@ const visionSchema = z.object({
 });
 
 let stop = false;
-let session: SessionRuntime<Game2048State, Direction> | undefined;
+let session: SessionRuntime<Game2048State, Direction> | ContinualLearningSession<Game2048State, Direction> | undefined;
 const visionAbort = new AbortController();
 let resolveInterrupted!: () => void;
 const interrupted = new Promise<void>(resolve => { resolveInterrupted = resolve; });
@@ -118,14 +118,17 @@ try {
     }
   } };
   let playerSequence = 0;
-  const reportLearning = async (event: LearningEvent) => liveTrace.record({
+  const reportLearning = async (event: LearningEvent) => {
+    if (!verbose && (event.type === "learning.created" || event.type === "learning.saved")) console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
+    await liveTrace.record({
     sequence: playerSequence, time: new Date().toISOString(), type: event.type,
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 },
     detail: event.detail,
-  });
+    });
+  };
   models.report = reportLearning;
   for (const event of setupEvents) await reportLearning(event);
-  session = new SessionRuntime<Game2048State, Direction>({
+  const sessionOptions: SessionOptions<Game2048State, Direction> = {
     adapter: game,
     candidates: policy ? { generate: candidates2048 } : definition.candidates,
     reflex: policy ? policyReflex(policy, verbose ? ranking => console.log(`[verbose] policy ranking: ${JSON.stringify(ranking)}`) : undefined)
@@ -151,7 +154,12 @@ try {
         ? { status: "success" } : { status: "failure", reason: "board did not change" };
     } },
     trace: liveTrace,
-  }, definition.goal);
+  };
+  session = policy || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
+    : await ContinualLearningSession.open({ game: { ...definition, verifier: sessionOptions.verifier }, adapter: game,
+      models, policy: learnedPolicy, signal: visionAbort.signal, seed, trace: liveTrace, report: reportLearning,
+      coldStart: process.argv.includes("--cold-start"),
+      learnEvery: Number(argument("learn-every") ?? 64), learnMs: Number(argument("learn-ms") ?? 300000) });
 
   console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
   console.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
@@ -168,7 +176,7 @@ try {
       const result = await session.step();
       if (stop) break;
       finalState = (result.after ?? await game.observe()).state;
-      if (!result.candidate) break;
+      if (!result.candidate) { if (session instanceof ContinualLearningSession) continue; break; }
       moves++;
       console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
       if (observer === "vision" && result.verification?.status !== "success") {
@@ -177,6 +185,7 @@ try {
       }
       if (pace) await delay(pace);
     }
+    if (!stop && session instanceof ContinualLearningSession) await session.review();
   } catch (error) {
     if (!stop) throw error;
   } finally { await session.finish(); }

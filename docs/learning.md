@@ -1,6 +1,6 @@
-# AI-first play and research
+# Continual game learning
 
-2048 and Snake use the same three-tier player and research runner from `@gamebot/core`. Each game supplies rules, observations, legal actions, a fresh environment, and a fixed evaluator. No game-specific winning strategy is included in the initial model prompts.
+2048 and Snake use the same three-tier player and learning session from `@gamebot/core`. Games supply rules, observations, actions and fixed evaluators. The harness supplies one learning cycle, whether a game lasts seconds or has no ending. No winning strategy is included in the initial model prompts.
 
 ## Configure models once
 
@@ -22,64 +22,94 @@ Astra and Sol generate structured plans; [Jev](https://vercel.com/ai-gateway/mod
 
 `GAMEBOT_STRATEGIST_MODEL` and `GAMEBOT_TACTICIAN_MODEL` override individual language models. Their resolution order is the role-specific variable, then `GAMEBOT_RESEARCH_MODEL` for strategist only, then `GAMEBOT_MODEL`, then the built-in default. `GAMEBOT_REFLEX_MODEL` independently overrides Jev and must identify an evaluation model; `GAMEBOT_MODEL` does not replace it. Empty overrides are rejected; unset a variable to restore its fallback. Programmatic callers pass AI SDK `LanguageModel` implementations for the higher tiers and an `Experimental_EvaluationModel` for reflex decisions. These defaults are initial research choices, not game-specific benchmark winners.
 
-## Play or research
+## Play and autoplay
 
 ```sh
 npm run game -- --game=2048 --verbose
-npm run autoplay -- --game=2048 --fresh --rounds=5 --games=3 --verbose
-npm run game -- --game=2048 --policy=latest
-npm run autoplay -- --game=2048 --goal="maximize score"
-npm run game -- --game=2048 --goal="maximize score" --policy=latest
-npm run autoplay -- --game=snake --fresh --rounds=5 --games=3
+npm run autoplay -- --game=2048 --cold-start --verbose
+npm run autoplay -- --game=snake --fresh --learn-every=64 --turns=1000
+npm run game -- --game=2048 --policy=/absolute/path/player.json
+npm run game -- --game=2048 --policy=/absolute/path/player.json --no-learn
 ```
 
-Ordinary play starts a new AI player unless `--policy=latest` or an explicit artifact path is supplied. It does not read prior research implicitly. `--policy=builtin` explicitly selects the older hand-written heuristic for an offline comparison. In 2048, explicit legacy weight JSON paths also remain playable; `--policy=latest` falls back to a legacy `active-policy.json` only for the default 2048 win goal if no matching new player artifact exists.
+Both ordinary AI play and autoplay learn during play. `game` plays one game; `autoplay` can restart a terminal episodic game and carry the learner forward. Learning reviews themselves never reset the world. Persistent worlds are never automatically recreated, even when their goal becomes terminal. The actual game opens by default. `--headless` hides the browser window; 2048 still uses the real game and keyboard bridge. Closing the window or pressing Ctrl+C interrupts work and saves the learning checkpoint.
 
-A new research experiment starts from the latest evaluated player and prior findings by default. `--fresh` starts from rules and an AI player without loading prior policies or findings. This is a new experiment, and its selected player replaces the latest pointer when it completes successfully. `--policy=/absolute/path/player.json` selects a particular starting revision. Policies carry the game ID, rule version and goal; mismatches fail rather than silently replaying a policy for another task.
+Ordinary play starts from a new AI player unless you explicitly choose `--policy=latest` or an artifact path. Autoplay starts from the latest benchmark-qualified player if one exists; `--fresh` starts without that policy. `--cold-start` also isolates the experiment from shared learning. Live revisions and evidence stay in their experiment directory. Neither mode injects a built-in solution. Explicit `--policy=builtin` and legacy 2048 weight files remain frozen heuristic comparisons; `--no-learn` freezes an AI/code artifact for replay.
 
-## Goals and evaluation
+Autoplay runs until interrupted or a budget is reached. `--turns` caps total decisions in the learning session, `--rounds` caps learning reviews, and `--games` caps completed episodic games. These are optional; the shared `--max-calls` budget still defaults to 10,000. Research/model calls consume that budget too. Retryable provider failures get at most two retries, and every attempt counts. A provider outage or exhausted budget stops work without becoming a game loss or a reason to rewrite the player.
 
-`--goal="win"` and `--goal="maximize score"` resolve directly for 2048. Other plain-text requests use Astra to select among evaluators exposed by the bridge, for example `--goal="win while reducing model calls"`. The original request remains the authoritative player goal. The selected evaluator and efficiency ordering are printed and saved; saved artifacts reject a different evaluation contract. Requests with constraints the bridge cannot measure are rejected with an explanation, rather than silently judged against an approximate objective. Currently 2048 exposes target-tile achievement and final score; arbitrary custom predicates are not inferred or generated.
+## One learning cycle
 
-## Cold-start evaluation
+The cycle is: collect observations and outcomes → review evidence → propose a revision or retain the current player → check executable code → try the revision during play → collect more evidence.
 
-To test whether a new GameBot instance can develop a successful player from its rules and goal:
+The same cycle runs when:
 
-```sh
-npm run autoplay -- --game=2048 --cold-start --seed=1 --verbose
-```
+- A bridge reports a milestone or setback.
+- Native game signals report a blocked goal, failed tactic or novel situation.
+- The review interval or time deadline is reached, including stretches with no measured progress.
+- A decision fails or cannot be verified.
+- A game is won or lost, or an explicit run limit is reached.
 
-Each invocation starts a new process and a separate experiment directory. It loads no previous policies, findings, skills, tool drafts or memory, and does not modify the shared research history or latest policy. `--policy` is rejected in this mode. The first player is AI-only. Subsequent revisions may use evidence and code produced inside this experiment. The models receive the rules, observations, legal actions and goal, with the general three-tier research instructions and execution interface. No example solution, strategy hints, game implementation source, or assertion that the goal is achievable is supplied. Built-in heuristics are not used.
+There is no separate post-game learner. Terminal events simply close a learning window. Each window records its starting and ending state, goal outcomes, progress, model usage, sampled transitions and any failed-decision evidence. The full journal retains every transition. No whole-game win is required before a model can discover and test a programmatic approach.
 
-The experiment saves its rules, goal, seed and model/budget configuration in `experiment.json`, and all gameplay/revision evidence in `runs.jsonl`. `result.json` distinguishes the initial player, the first observed win (episode, policy, steps and cumulative model calls), and the selected player's performance on previously unused test seeds. `goalReachedOnTest` means at least one verified goal achievement on that final set; it is not a guarantee of reliable wins. If the initial AI player already wins, that is recorded separately from improvement through research. An interrupted or budget-exhausted run retains its journal, saved proposals and checkpoint but has no completed final-audit result. Resume it with `npm run autoplay -- --game=2048 --resume=.gamebot/research/2048/<run-id>`; cold-start isolation is restored from the manifest.
+`--learn-every=64` sets the initial review interval; Astra can change the next interval from 1–2048 decisions as evidence warrants. `--learn-ms=300000` sets a wall-time deadline. Native events can trigger earlier reviews. Deadlines are checked between actions, not by an independent timer during a blocked game operation. Reviews currently await models between actions; they do not pause an external world's clock. The runtime reobserves and validates actions before dispatch.
 
-Repeat with other `--seed` values for independent cold starts. Reusing a seed reproduces the game random streams, not necessarily model outputs. `--rounds`, `--games`, `--turns` and `--max-calls` bound the experiment. A live browser view opens by default and follows each research attempt; subsequent ordinary play still does not load the result automatically.
-
-This tests a cold harness, not a model with erased pretraining: a pretrained model may already know 2048. No saved GameBot knowledge or demonstrations are supplied, and learning from the run's own feedback is intentional.
-
-Research defaults to five rounds, three games per seed set and 5,000 decisions per game. `--rounds`, `--games`, `--turns`, `--seed` and `--max-calls` are configurable. The shared model-call budget defaults to 10,000; retryable provider failures get at most two retries, each counted against that budget, and each request has a two-minute timeout. If the provider still fails, research pauses as inconclusive; it does not score the outage as a loss or propose a gameplay fix. Resume retries that unfinished trial. These commands make model calls and can incur substantial provider costs. A small turn limit is useful for checking setup, but a truncated game is not evidence of a loss. Ctrl+C aborts in-flight model work and leaves completed evidence on disk. The game opens before play starts and keeps the final board visible until Ctrl+C. 2048 research controls the original browser game through the same keyboard bridge as ordinary play, including training, validation, and final evaluation. It reloads the same page between attempts, clearing the saved board and seeding the game’s random stream for matched comparisons. Closing that window also stops research. `--headless` hides the window and exits when research completes; 2048 still runs in a real browser. `--watch` is an optional explicit alias for the default visible mode. `--pace` sets the viewing delay in milliseconds (default 200; use 0 for full speed). 2048 shares ordinary play’s browser discovery and installation behavior. Snake’s viewer uses the installed default browser.
+The strategist/researcher can revise prompts, Jev questions and composition code, review scheduling, or a generated action-selection program. It can also return no revision and gather more evidence. Rules, goal evaluation and native action legality remain outside the editable player.
 
 ## The three tiers
 
-Before the first action, the strategist understands the rules, enumerates alternatives, chooses an initial AI approach, assigns tactical/reflex responsibilities, and selects review intervals. Its setup completes before play starts.
+Astra establishes the initial strategy and delegates responsibilities. The tactician turns that strategy into lasting objectives; Jev answers typed judgments to choose an offered action. Ordinary planning reviews adapt the current strategy and tactics. Learning reviews can also revise the saved player implementation.
 
-The tactician translates the strategy into lasting objectives and reviews recent outcomes. It can escalate to the strategist. The reflex/JEV role chooses an offered action. Strategy and tactics are distinct session state; tactical updates do not overwrite the strategic plan. For AI decisions, reviews occur at the selected intervals and on game signals. Each review chooses its next interval from the observed risk and progress. Tactical `instruction` persists as an objective; optional `immediateAction` expires after that single decision, so a move recommendation does not become a repeated command. The current turn-based integrations await these reviews. The underlying session runtime still reobserves and validates the action before dispatch, and a changed user goal cancels in-flight work and starts fresh planning.
+Each planning review chooses its next check-in. Tactical `instruction` is a lasting objective; `immediateAction` expires after that decision. Autonomous code runs before supervision and can request a tactician or strategist review when it can use the answer. It does not pay for periodic planning calls it ignores. The independent learning cycle still observes that program and reviews its measured results.
 
-The default reflex backend is TypeSafe AI's Jev through Gateway (`typesafe-ai/jev`). Each call supplies the current state, goal, strategy, tactic, reflex instructions and recent outcomes, and asks Jev to choose among the offered candidate IDs. Jev does not generate explanations or code. Verbose events record the chosen ID, its probability distribution when supplied, provider metadata, latency and token use. Model errors and invalid choices fail the decision; they do not silently switch to a language model. Jev calls share the same call budget, cancellation and timeout as the higher tiers.
+Player kinds are `ai`, `code`, and `hybrid`. Code defines `choose(input)` and returns an offered ID; hybrid code can return null to delegate to Jev. It can return `{ candidateId: null, review: "strategist" }` or request `"tactician"`. The runtime reviews and invokes the program once more with updated context and `reviewCompleted: true`. Repeated review requests within the same decision are rejected. Inputs include state, candidates, goal/directive, strategy, tactic, immediate advice, recent decisions and game signals.
 
-`HierarchicalPlayer` still accepts an optional `reflex` implementation through the existing `Reflex<State, Action>` interface. It receives the strategy and tactic and replaces Jev for AI decisions without changing the higher tiers. Generated code policies can handle actions directly; hybrid policies return `null` to delegate to Jev (or the explicitly injected backend).
+Programs run in fresh QuickJS interpreters with 100 ms and 32 MiB limits. They have no imports, filesystem, network, clock or random APIs. Generated code and Jev programs receive preflight contract checks on recorded states before activation. These check bounded execution and legal outputs, not whether an algorithm is optimal. The active program only changes between actions.
 
-## What research can change
+## Trying a revision in a persistent world
 
-A versioned player artifact includes strategic, tactical and reflex instructions, review intervals, an optional Jev program, and a policy kind:
+A passing revision becomes a live trial. The next learning windows provide evidence to keep it locally, reject it, or remain inconclusive. Program failures restore the previous player. Rejection restores behavior, not the world: already executed game actions cannot be undone by rolling back code. Inconclusive revisions retain the original fallback if Astra revises them again.
 
-- `ai`: Jev judgments at the leaves, optionally with learned preparation and answer-composition code.
-- `code`: generated JavaScript chooses actions.
-- `hybrid`: generated JavaScript chooses actions or returns `null` to delegate to the AI reflex.
+The researcher sees progress within each window, not just absolute accumulated scores. Bridges can declare a `comparisonKey` for comparable opportunities; measured regressions in progress per decision then reject a trial. Without that key, the harness does not assume that two successive situations are comparable. A locally retained revision is observational evidence, not proof of causal improvement or generality. User goals remain authoritative, including when progress requires an investment before a payoff.
 
-The research strategist receives sampled trajectories (including the end of each game), Jev requests and answers for those decisions, fixed evaluation results, previous hypotheses and rejection/error evidence. Failed decisions also retain the observation and any available judgment evidence. It diagnoses failures, enumerates alternatives, and proposes an entire revised player. It can invent scoring features, simulation/search code or a different algorithm. There is no predefined list of weight adjustments or winning implementations. The researcher proposes one experiment each round; this implementation does not yet expose arbitrary investigative tool calls to it.
+Live learning saves explicit player artifacts and prints their paths. Replay one with `--policy=/path/to/player.json`. It does not overwrite the benchmark-qualified `latest` pointer. This allows persistent worlds to improve and resume with their current player without claiming the guarantees of a controlled experiment.
 
-Candidate code defines `function choose(input)` and returns an offered candidate ID. Input contains observed state, candidates, the authoritative goal and directive, current strategy/tactic, and recent decisions. Plain JavaScript helper functions are allowed. Code executes in QuickJS WebAssembly with a fresh context, 32 MiB memory and a 100 ms execution deadline per invocation. No host objects, filesystem, network or imports are exposed; clock and random APIs are disabled. Invalid actions, exceptions and timeouts become failed experiments. Hybrid fallback is explicit; errors do not silently trigger AI rescue. Autonomous code runs before supervision and does not pay for periodic model calls that it cannot use. A program can instead return `{ candidateId: null, review: "tactician" }` or request `"strategist"`. The runtime performs that review and invokes the same program once more with updated context and `reviewCompleted: true`; a second review request in that decision is rejected. Generated code can request supervision conditionally using the state. Hybrid code that returns null without requesting a review follows the AI review schedule and delegates to Jev. Code changes still belong to the outer research loop.
+## Goals
+
+2048 resolves `--goal="win"` and `--goal="maximize score"` directly. Other plain-text requests, such as `--goal="win while reducing model calls"`, ask Astra to choose a fixed evaluator exposed by the bridge. The original request stays authoritative, and the chosen evaluation contract is printed and saved. Unsupported constraints must be reported rather than silently mapped to a different objective.
+
+Win mode stops at the target tile; score mode continues beyond 2048 until game over or a run limit. Goal performance comes first, then efficiency. The evaluator and user intent guide live reviews. For controlled comparisons, wins outrank partial progress, and efficiency breaks ties in achieved performance. Costs include decisions, model calls, tokens and latency; they are not estimated monetary prices.
+
+## Checkpoints and resume
+
+```sh
+npm run autoplay -- --game=2048 --resume=.gamebot/research/2048/<run-id>
+```
+
+The top-level `.gamebot/research/<game>/<run>/` directory contains:
+
+- `experiment.json`: game, rules, goal, evaluation, model configuration and budgets.
+- `runs.jsonl`: full observations/actions, planning and learning decisions, provider events and usage.
+- `checkpoint.json`: active policy, fallback/trial, learning history, partial window, pending proposal and cumulative usage.
+- Policy JSON artifacts for explicit replay, plus `result.json` when an autoplay invocation reaches its limit.
+
+Ctrl+C saves the partial window without starting another model call. Resume reviews that evidence and reuses any saved proposal. It preserves the model budget; raise `--max-calls` explicitly when necessary. Autoplay resumes its saved total turn/review/game limits; increase those limits to continue beyond them. Keep the same game version, goal and models. Supply bridge options such as `--game-dir` and a nondefault `--target` again.
+
+An episodic bridge starts a fresh board on process resume. A persistent bridge must provide `reconnect()` to attach to its existing world; otherwise resume fails rather than resetting it. Changes that occurred offline are logged separately and excluded from the previous policy's progress window. This is a learning checkpoint, not a universal world save/restore implementation.
+
+Ordinary traces still live under `.gamebot/traces/`. The launcher resolves data and relative paths from the repository root. Older package-local saves are imported without overwriting existing root files; cold-start and resume launches skip that migration.
+
+## Optional matched benchmarks
+
+```sh
+npm run autoplay -- --game=2048 --benchmark --policy=/absolute/path/player.json --rounds=5 --games=3 --turns=5000
+```
+
+A benchmark is a validation method, not a different kind of learning. It uses the same research proposal function, player, goals and program checks. Its evaluated revisions are held fixed while matched seed sets compare them. Training improvements must also pass fresh validation and a final audit before updating `.gamebot/games/<game>/goals/<goal-key>/latest-player.json`.
+
+For `--benchmark`, `--rounds` means revision experiments, `--games` means games per seed set, and `--turns` is the per-game limit. Defaults remain 5, 3 and 5,000. Persistent-world definitions cannot use this reset-based runner. Existing benchmark checkpoints remain resumable, and their mode is detected from their manifest. Small sample sizes provide evidence, not guarantees of universal or optimal play.
+
+Cold-start runs begin with AI decisions and the game's rules/goal, without saved GameBot knowledge, solver examples or assurances that the goal is attainable. The underlying pretrained models may already know a game. To measure transfer, repeat cold starts across different games; a stronger 2048 score alone is insufficient.
 
 ### Learned Jev programs
 
@@ -98,26 +128,19 @@ Initial cold-start setup requires `kind: "ai"`, `code: null` and `jev: null`. Af
 
 New artifacts use `gamebot-player-v2`; existing `gamebot-player-v1` files load with `jev: null`. The Jev source participates in the policy ID, so each revision and its evaluation evidence remain distinguishable. Verbose output and research journals include the exact evaluation request, returned answers and selected action.
 
-The runtime and game evaluator remain outside the editable player. The candidate is evaluated on matched training seeds. An improvement must also beat the incumbent on fresh matched validation seeds. A final, previously unused seed set compares the selected candidate with the starting player before publication. More wins outrank score; candidates with execution errors cannot be promoted. For 2048, `--goal="win"` (default) stops at the target tile. `--goal="maximize score"` continues past 2048 and compares raw scores at game over or the turn limit; there is no binary win for that objective. Use consistent turn budgets for comparable score experiments. When both players win every game in a set, extra score no longer outweighs the win objective: fewer decisions, then fewer model calls and tokens break ties. For score objectives and incomplete success, measured goal performance stays first. A free-text goal can prioritize model calls before decisions in the efficiency comparison. Wall time, total tokens, calls and failures are reported, including a per-role breakdown; these are measurements, not estimated monetary prices. Research continues after both wins and losses for the configured rounds. No handcrafted solver is injected. These are empirical comparisons with stochastic models, not statistical proof of superiority or guarantees of optimal play; increase `--games` for stronger evidence.
+## Integrating a game
 
-## Evidence and extension
+Implement `LearningGame<State, Action>` with `id`, `version`, `rules`, `goal`, `create(seed)`, `candidates`, `verifier`, and a fixed `outcome(state)`. A non-ending world can return `done: false` indefinitely; score should measure progress toward the user's goal. The core does not inspect game-specific state fields.
 
-Before real-game candidate trials, the harness runs generated code on sampled recorded states from the incumbent and recent rejected experiments. It checks time/memory limits, legal outputs, bounded review requests and Jev preparation/composition contracts. Jev composition is exercised with synthetic valid answers; these are contract fixtures, not model results or evidence of playing strength. Preflight failures and measured execution time go back to Astra. This cannot prove algorithm correctness or cover every future state. Candidates must still pass real-game evaluation. Evidence includes every episode in the tested sets, with deduplicated trajectory samples and final states, rather than only the first failure.
+For longer-horizon integrations:
 
-`checkpoint.json` atomically records the baseline, proposals, completed trials, preflight results and cumulative budget usage. `--resume=<experiment-directory>` reuses them; an interrupted game restarts from its seed, since browser process state is not checkpointed. Keep the same game version, goal/evaluator, model IDs and evaluation settings. CLI resume restores saved rounds, games, turns, seed and call limit. You may raise `--max-calls` explicitly after exhaustion. Supply the same bridge-specific options such as `--game-dir` and a nondefault `--target`. Do not combine resume with `--fresh`, `--cold-start` or `--policy`. Experiments created before checkpoints were implemented cannot be resumed through this mechanism.
+- Set `continuity: "persistent"` and supply `reconnect()` that attaches to the existing world without resetting it.
+- Optionally supply `learningFeedback({ before, after, steps, elapsedMs })`, returning `progress` and optional `milestone`, `setback`, or `comparisonKey`. These are bridge-owned measurements, not metrics the learner may rewrite.
+- Use native adapter signals for blocked goals, failed tactics and novel situations.
+- For custom text goals, expose fixed `goalOptions` and resolve the request before starting the session.
 
-Artifacts and complete transition journals live under `.gamebot/research/<game>/<run>/`. The latest evaluated artifact is `.gamebot/games/<game>/goals/<goal-key>/latest-player.json`, keyed by the goal ID and description. `--policy=latest` resolves the current goal; older game-wide artifacts remain readable only for matching goals. The experiment journal also includes model starts, completions, failures and usage with phase/policy/seed attribution. A separate research ledger retains hypotheses, diagnoses, acceptance/rejection and errors across experiments. Research evidence is not automatically treated as validated general-purpose memory or promoted across games. Ordinary gameplay traces include full observations, offered actions and verified before/after states, plus strategy/tactic updates, reflex summaries, code-versus-evaluation selection and model token usage. The launcher runs every bridge from the GameBot repository root, so all games share the top-level `.gamebot/` directory. It prints that absolute directory at startup. Relative `--policy` and `--game-dir` arguments resolve from the repository root too. Directly invoked bridge binaries still use their working directory.
+`ContinualLearningSession.open(...)` accepts the game, model runner, cancellation signal and an optional already-connected adapter. `step()` performs an action and any due learning review. `review()` closes a partial window at an intentional run limit; `finish()` cancels work and saves without requesting more AI. `restart()` is allowed only after a terminal episodic game. `runContinualLearning` drives this session for autoplay; `runResearch` remains the optional matched benchmark runner.
 
-On the first standard launch of each bridge, the launcher copies missing files from its old package-local `.gamebot/` directory into the root directory. Existing root files are never overwritten, and the original files remain in place. A `.imported-<game>` marker prevents repeated imports. Cold-start launches skip this import and keep shared learning untouched.
+A research entry point uses `runResearchCli(game, window)`. A bridge with its own game window supplies `open({ headless, signal, onClose })` returning a closeable handle. 2048 uses the real browser page; Snake supplies its native state renderer to the shared viewer. Connecting and rendering a game remain bridge responsibilities. The OpenRCT2 and RuneBench transport bridges still need their own complete learning-game definitions and goal feedback before they can use this loop for autonomous persistent-world play.
 
-To add a game, implement `LearningGame<State, Action>`:
-
-- `id`, `version`, `rules`, and the authoritative `goal`.
-- `create(seed)` returning a fresh game adapter.
-- `candidates` and `verifier` using the native game types.
-- `outcome(state)` returning terminal status, success and a fixed score.
-- Optional `evaluation` describing the immutable objective and efficiency ordering. Custom-goal bridges expose `goalOptions`, a map of named, game-owned evaluators, and `requestedGoal`; call `resolveGameGoal` before starting the player/research. The CLI resolves these once and freezes the chosen contract in the manifest and player artifact. The model cannot edit an evaluator.
-
-Use `HierarchicalPlayer` as the session's reflex and `runResearch` for experiments. A research entry point calls `runResearchCli(game, window)` with an `open({ headless, signal, onClose })` method returning a handle with `close()`. This opens the bridge’s actual game connection even in headless mode; `game.create(seed)` resets that connection for each attempt. The window must clean up if opening fails, stop work on abort, and call `onClose` when the user closes it. 2048 uses this interface to reuse the real browser page. A game that needs a viewer can instead pass `{ title, render }`, supplying trusted bridge JavaScript that defines `renderGame(state)` for the shared viewer, as Snake does. Game rendering stays in the bridge; core owns the research lifecycle. Its package advertises `gamebot.researchBin`. A game without a viewer can still run with `--headless`. See the 2048 and Snake `learning.ts` files for two implementations. Research currently requires fresh episodic environments; checkpoint creation for persistent worlds must be supplied by their game integration. Browser perception, live-game connections and rules stay in game packages.
-
-The old `tools/` draft area remains inert. Executable policy artifacts are a separate, explicitly evaluated route; this does not enable arbitrary scripts in skill folders.
+The old skill `tools/` draft area remains inert. Generated player artifacts are an explicitly checked execution route; arbitrary scripts in skill folders are not enabled.

@@ -5,6 +5,7 @@ import { randomInt } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadPlayer, type LearningGame } from "./policy.js";
 import { PlayerModelRunner, playerModelsFromEnv, type LearningReporter, type LearningEvent } from "./models.js";
+import { runContinualLearning } from "./continual.js";
 import { runResearch } from "./research.js";
 import { openGameWindow, startResearchViewer, type ResearchViewerOptions } from "./viewer.js";
 
@@ -24,15 +25,20 @@ export function learningConsole(verbose = false): LearningReporter {
       console.log(`Goal: ${goal.description}. Evaluation: ${evaluation.description}. Efficiency priority: ${evaluation.efficiency}.`);
       return;
     }
-    if (!verbose && (event.type === "research.proposal" || event.type === "player.initialized")) {
+    if (!verbose && (event.type === "research.proposal" || event.type === "learning.proposal" || event.type === "player.initialized")) {
       const { policy, ...summary } = event.detail as { policy: { kind: string }; [key: string]: unknown };
-      console.log(`[${event.type}] ${JSON.stringify({ ...summary, policyKind: policy.kind })}`);
+      console.log(`[${event.type}] ${JSON.stringify({ ...summary, policyKind: policy?.kind ?? "no-change" })}`);
+      return;
+    }
+    if (!verbose && event.type === "learning.window") {
+      const item = event.detail as { reason: string; steps: number; progress: number };
+      console.log(`[learning.window] ${item.reason}; ${item.steps} decisions; progress ${item.progress}`);
       return;
     }
     if (event.type === "episode.completed") {
       const item = event.detail as { seed: number; set: string; stopReason: string; score: number; steps: number };
       console.log(`${item.set} seed ${item.seed}: ${item.stopReason}; score ${item.score}; ${item.steps} decisions`);
-    } else if (event.type.startsWith("research.") || event.type === "player.initialized" ||
+    } else if (event.type.startsWith("research.") || event.type.startsWith("learning.") || event.type === "player.initialized" ||
       verbose && !event.type.startsWith("runtime.") && event.type !== "episode.step") {
       console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
     }
@@ -80,10 +86,10 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     const setupEvents: LearningEvent[] = [];
     models.report = async event => { setupEvents.push(event); await report(event); };
     if (learningArgument("goal") !== undefined && !game.goalOptions && !game.requestedGoal) game.requestedGoal = learningArgument("goal");
-    if (saved?.evaluation && learningArgument("goal") === undefined && !game.requestedGoal && JSON.stringify(game.goal) !== JSON.stringify(saved.goal)) game.requestedGoal = saved.evaluation.request;
-    await resolveGameGoal(game, models, controller.signal, saved?.evaluation);
+    if ((saved?.identity?.evaluation ?? saved?.evaluation) && learningArgument("goal") === undefined && !game.requestedGoal && JSON.stringify(game.goal) !== JSON.stringify(saved.identity?.goal ?? saved.goal)) game.requestedGoal = (saved.identity?.evaluation ?? saved.evaluation).request;
+    await resolveGameGoal(game, models, controller.signal, saved?.identity?.evaluation ?? saved?.evaluation);
     models.report = report;
-    const policy = selection === undefined ? undefined : await loadPlayer(selection, game);
+    let policy = selection === undefined ? undefined : await loadPlayer(selection, game);
     if (view && "open" in view) {
       gameWindow = await view.open({ headless, signal: controller.signal, onClose: stop });
       console.log(`GameBot controls the real ${game.id} game${headless ? " in a headless browser" : " window"}. Ctrl+C stops research.`);
@@ -95,7 +101,23 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     }
     console.log(`Researching ${game.id}: strategist → tactician → reflex/JEV; model-call budget ${models.maxCalls}. Ctrl+C stops the run.`);
     if (coldStart) console.log("Cold start: rules and goal only; prior learning is excluded and results stay in this experiment.");
-    await runResearch({
+    const benchmark = saved ? saved.mode !== "continual-v1" : process.argv.includes("--benchmark");
+    if (saved?.mode === "continual-v1" && process.argv.includes("--benchmark")) throw new Error("Cannot resume live learning as a benchmark");
+    if (!benchmark) {
+      if (!policy && !resume && !coldStart && !process.argv.includes("--fresh")) {
+        try { policy = await loadPlayer("latest", game); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+      await runContinualLearning({ game, models, policy, resume, setupEvents, signal: controller.signal, report,
+        coldStart, fresh: saved?.fresh ?? process.argv.includes("--fresh"),
+        seed: Number(learningArgument("seed") ?? saved?.seed ?? randomInt(1, 2 ** 30)),
+        learnEvery: Number(learningArgument("learn-every") ?? saved?.learnEvery ?? 64),
+        learnMs: Number(learningArgument("learn-ms") ?? saved?.learnMs ?? 300000),
+        maxSteps: learningArgument("turns") === undefined ? undefined : Number(learningArgument("turns")),
+        maxReviews: learningArgument("rounds") === undefined ? undefined : Number(learningArgument("rounds")),
+        maxGames: learningArgument("games") === undefined ? undefined : Number(learningArgument("games")),
+      });
+    } else await runResearch({
       game, models, policy, resume, setupEvents, fresh: saved?.fresh ?? process.argv.includes("--fresh"), coldStart,
       rounds: Number(learningArgument("rounds") ?? saved?.rounds ?? 5), games: Number(learningArgument("games") ?? saved?.games ?? 3),
       maxSteps: Number(learningArgument("turns") ?? saved?.maxSteps ?? 5000), firstSeed: Number(learningArgument("seed") ?? saved?.firstSeed ?? randomInt(1, 2 ** 30)),
