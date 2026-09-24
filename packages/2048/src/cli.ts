@@ -52,7 +52,7 @@ else if (policyPath === "latest") {
 else if (policyPath !== undefined) {
   if (!policyPath) throw new Error("--policy requires a file path or latest");
   const saved = JSON.parse(await readFile(resolve(policyPath), "utf8"));
-  if (saved.format === "gamebot-player-v1") learnedPolicy = await loadPlayer(policyPath, definition);
+  if (saved.format === "gamebot-player-v1" || saved.format === "gamebot-player-v2") learnedPolicy = await loadPlayer(policyPath, definition);
   else policy = policySchema.parse(saved); // Explicit legacy weight-file replay remains supported.
 }
 if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||

@@ -1,7 +1,7 @@
 import { getQuickJS } from "quickjs-emscripten";
 
 /** WASM interpreter: no host objects, imports or I/O are exposed to candidate code. */
-export async function runPolicyCode(source: string, input: unknown, signal: AbortSignal): Promise<string | null> {
+export async function runPolicyProgram(source: string, entry: "choose" | "prepare" | "select", input: unknown, signal: AbortSignal): Promise<unknown> {
   signal.throwIfAborted();
   const engine = await getQuickJS();
   const deadline = performance.now() + 100;
@@ -11,9 +11,11 @@ export async function runPolicyCode(source: string, input: unknown, signal: Abor
     "use strict";
     globalThis.Date = undefined;
     Math.random = undefined;
-    ${source}
-    const answer = choose(${JSON.stringify(input)});
-    if (answer !== null && (typeof answer !== "string" || answer.length > 1024)) throw new Error("choose must return a candidate ID or null");
+    const answer = JSON.stringify((() => {
+      ${source}
+      return ${entry}(${JSON.stringify(input)});
+    })());
+    if (typeof answer !== "string" || answer.length > 131072) throw new Error("Policy result must be JSON of at most 131072 characters");
     answer;
     `, {
       memoryLimitBytes: 32 * 1024 * 1024,
@@ -24,6 +26,12 @@ export async function runPolicyCode(source: string, input: unknown, signal: Abor
     throw new Error(`Policy code failed: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
   }
   signal.throwIfAborted();
-  if (result !== null && typeof result !== "string") throw new Error("Invalid code policy result");
+  if (typeof result !== "string" || result.length > 131072) throw new Error("Invalid policy program result");
+  return JSON.parse(result);
+}
+
+export async function runPolicyCode(source: string, input: unknown, signal: AbortSignal): Promise<string | null> {
+  const result = await runPolicyProgram(source, "choose", input, signal);
+  if (result !== null && (typeof result !== "string" || result.length > 1024)) throw new Error("choose must return a candidate ID or null");
   return result;
 }

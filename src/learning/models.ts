@@ -2,6 +2,7 @@ import { ToolLoopAgent, Output, isStepCount, experimental_evaluate as evaluate,
   type LanguageModel, type Experimental_EvaluationModel } from "ai";
 import { z } from "zod";
 import type { Candidate } from "../core/index.js";
+import { prepareJudgments, selectJudgmentAction, type JevPolicy } from "./judgment.js";
 
 export type PlayerRole = "strategist" | "tactician" | "reflex";
 export type PlayerModels = {
@@ -61,30 +62,46 @@ export class PlayerModelRunner {
     return schema.parse(result.output);
   }
 
-  /** Native typed choice: Jev selects an offered action; it does not generate prose or code. */
-  async choose<Action>(candidates: readonly Candidate<Action>[], input: unknown, signal: AbortSignal): Promise<string> {
+  /** Evaluate typed judgments, then compose them into an offered action. Jev never generates code. */
+  async choose<Action>(candidates: readonly Candidate<Action>[], input: unknown, signal: AbortSignal,
+    policy: JevPolicy | null = null, report: LearningReporter | undefined = this.report): Promise<string> {
     if (!candidates.length || new Set(candidates.map(candidate => candidate.id)).size !== candidates.length) {
       throw new Error("Reflex evaluation requires nonempty, unique candidate IDs");
     }
-    const result = await this.call("reflex", signal, abortSignal => evaluate({
-      model: this.models.reflex,
-      state: JSON.stringify(input),
+    const prepared = policy ? await prepareJudgments(policy, input, signal) : {
+      state: JSON.parse(JSON.stringify(input)),
       questions: {
         action: {
-          type: "choice",
-          instructions: `Choose the offered action that best advances the user goal using the current strategy, tactic and reflex responsibilities. ${authorityInstruction}`,
+          type: "choice" as const,
+          instructions: "Choose the offered action that best advances the user goal using the current strategy, tactic and reflex responsibilities.",
           criteria: Object.fromEntries(candidates.map(candidate => [candidate.id, candidate.description])),
         },
       },
+    };
+    const request = {
+      state: { goal: (input as { goal?: unknown }).goal, evidence: prepared.state },
+      questions: Object.fromEntries(Object.entries(prepared.questions).map(([id, question]) =>
+        [id, { ...question, instructions: `${question.instructions}\n${authorityInstruction} The authoritative goal is in state.goal; prepared evidence is in state.evidence.` }])),
+    };
+    await report?.({ type: "reflex.request", detail: request });
+    const result = await this.call("reflex", signal, abortSignal => evaluate({
+      model: this.models.reflex,
+      // JSON roundtrip removes absent optional fields before the SDK's strict state validation.
+      state: JSON.parse(JSON.stringify(request.state)),
+      questions: request.questions,
       maxRetries: 0,
       abortSignal,
     }));
-    const answer = result.answers.action;
-    if (!candidates.some(candidate => candidate.id === answer.choice)) throw new Error(`Reflex selected unoffered candidate: ${answer.choice}`);
-    await this.report?.({ type: "reflex.summary", detail: {
-      candidateId: answer.choice, probabilities: answer.probabilities, providerMetadata: result.providerMetadata,
+    await report?.({ type: "reflex.answers", detail: { answers: result.answers, providerMetadata: result.providerMetadata } });
+    const action = result.answers.action;
+    const choice = policy ? await selectJudgmentAction(policy,
+      { context: input, request: prepared, answers: result.answers, providerMetadata: result.providerMetadata }, candidates, signal)
+      : action && "choice" in action ? action.choice : undefined;
+    if (typeof choice !== "string" || !candidates.some(candidate => candidate.id === choice)) throw new Error(`Reflex selected unoffered candidate: ${choice}`);
+    await report?.({ type: "reflex.summary", detail: {
+      candidateId: choice, probabilities: action && "probabilities" in action ? action.probabilities : undefined, providerMetadata: result.providerMetadata,
     } });
-    return answer.choice;
+    return choice;
   }
 }
 

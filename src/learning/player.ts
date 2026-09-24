@@ -14,11 +14,11 @@ export async function initializePlayer<State, Action>(
     rationale: z.string(),
   }), `Understand this game and establish the initial three-tier player. Assign responsibilities to the tactician and fast reflex/JEV layer.
 Enumerate competing approaches, choose an initial hypothesis, and choose review intervals measured in decisions.
-Start with an AI policy (kind ai, code null). We must collect gameplay evidence before proposing executable code.
+Start with an AI policy (kind ai, code null, jev null). We must collect gameplay evidence before proposing executable code or custom Jev questions.
 The goal defines success; do not assume it is attainable. No built-in solution or examples are supplied.`, {
     rules: game.rules, goal: game.goal, observation,
   }, signal);
-  if (plan.policy.kind !== "ai") throw new Error("Initial player must be AI-first");
+  if (plan.policy.kind !== "ai" || plan.policy.jev !== null) throw new Error("Initial player must be AI-first with default Jev questions");
   await report?.({ type: "player.initialized", detail: plan });
   return plan.policy;
 }
@@ -113,7 +113,7 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
         } }, candidates, signal);
       } else {
         choice = await this.options.models.choose(candidates,
-          { ...input, rules: this.options.game.rules, responsibilities: this.policy.reflex }, signal);
+          { ...input, rules: this.options.game.rules, responsibilities: this.policy.reflex }, signal, this.policy.jev, this.options.report);
       }
     }
     if (!candidates.some(candidate => candidate.id === choice)) throw new Error(`Player selected unoffered candidate: ${choice}`);
