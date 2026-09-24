@@ -10,9 +10,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { z } from "zod";
-import { FileTraceSink, SessionRuntime, aiSdkReflex, aiSdkVisionExtractor, type TraceEvent } from "@gamebot/core";
+import { FileTraceSink, SessionRuntime, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
+  playerModelsFromEnv, loadPlayer, type PlayerPolicy, type TraceEvent, type LearningEvent } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
-import { candidates2048, defaultPolicy, policyReflex, policySchema } from "./policy.js";
+import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
+import { learning2048 } from "./learning.js";
 
 function argument(name: string): string | undefined {
   return process.argv.find(arg => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -36,11 +38,22 @@ const pace = Number(argument("pace") ?? 200);
 const policyPath = argument("policy");
 const useAi = process.argv.includes("--ai");
 if (useAi && policyPath !== undefined) throw new Error("Use either --ai or --policy, not both");
-const activePolicyPath = resolve(".gamebot", "games", "2048", "active-policy.json");
-let policy = defaultPolicy;
-if (policyPath !== undefined) {
+const definition = learning2048(target);
+let policy: Policy2048 | undefined;
+let learnedPolicy: PlayerPolicy | undefined;
+if (policyPath === "builtin") policy = defaultPolicy;
+else if (policyPath === "latest") {
+  try { learnedPolicy = await loadPlayer(policyPath, definition); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    policy = policySchema.parse(JSON.parse(await readFile(resolve(".gamebot", "games", "2048", "active-policy.json"), "utf8")));
+  }
+}
+else if (policyPath !== undefined) {
   if (!policyPath) throw new Error("--policy requires a file path or latest");
-  policy = policySchema.parse(JSON.parse(await readFile(policyPath === "latest" ? activePolicyPath : resolve(policyPath), "utf8")));
+  const saved = JSON.parse(await readFile(resolve(policyPath), "utf8"));
+  if (saved.format === "gamebot-player-v1") learnedPolicy = await loadPlayer(policyPath, definition);
+  else policy = policySchema.parse(saved); // Explicit legacy weight-file replay remains supported.
 }
 if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
     !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed) || !Number.isSafeInteger(pace) || pace < 0) {
@@ -50,8 +63,9 @@ const headless = process.argv.includes("--headless");
 const verbose = process.argv.includes("--verbose");
 const observer = argument("observe") ?? "dom";
 if (observer !== "dom" && observer !== "vision") throw new Error("--observe must be dom or vision");
-const model = useAi ? process.env.GAMEBOT_REFLEX_MODEL ?? process.env.GAMEBOT_MODEL : undefined;
-if (useAi && !model) throw new Error("Set GAMEBOT_REFLEX_MODEL or GAMEBOT_MODEL for --ai");
+const playerModels = policy ? undefined : playerModelsFromEnv();
+const maxCalls = Number(argument("max-calls") ?? 10000);
+if (!Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("--max-calls must be positive");
 const visionModel = observer === "vision" ? process.env.GAMEBOT_VISION_MODEL ?? process.env.GAMEBOT_MODEL ?? "google/gemini-3.8-flash" : undefined;
 const visionSchema = z.object({
   board: z.array(z.array(z.number().int().nonnegative().refine(value => value === 0 || value >= 2 && Number.isInteger(Math.log2(value)))).length(4)).length(4),
@@ -152,24 +166,18 @@ try {
       console.log(`[verbose] ${event.type}${event.detail === undefined ? "" : `: ${JSON.stringify(event.detail)}`}`);
     }
   } };
+  let playerSequence = 0;
+  const reportLearning = async (event: LearningEvent) => liveTrace.record({
+    sequence: playerSequence, time: new Date().toISOString(), type: event.type,
+    authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 },
+    detail: event.detail,
+  });
+  const models = playerModels ? new PlayerModelRunner(playerModels, maxCalls, reportLearning) : undefined;
   session = new SessionRuntime<Game2048State, Direction>({
     adapter: game,
-    candidates: { generate: candidates2048 },
-    reflex: useAi ? aiSdkReflex<Game2048State, Direction>({
-      model: model!,
-      maxOutputTokens: 96,
-      onCall(report) {
-        if (verbose) console.log(`[verbose] reflex model ${model}: ${Math.round(report.latencyMs)} ms, ${report.usage.inputTokens ?? 0} input / ${report.usage.outputTokens ?? 0} output tokens`);
-      },
-      render(context, candidates) {
-        return JSON.stringify({
-          goal: context.authority.goal.description,
-          board: context.observation.state.board,
-          score: context.observation.state.score,
-          candidates: candidates.map(({ id, description }) => ({ id, description })),
-        });
-      },
-    }) : policyReflex(policy, verbose ? ranking => console.log(`[verbose] policy ranking: ${JSON.stringify(ranking)}`) : undefined),
+    candidates: policy ? { generate: candidates2048 } : definition.candidates,
+    reflex: policy ? policyReflex(policy, verbose ? ranking => console.log(`[verbose] policy ranking: ${JSON.stringify(ranking)}`) : undefined)
+      : new HierarchicalPlayer({ game: definition, models: models!, policy: learnedPolicy, report: reportLearning }),
     verifier: { verify({ before, after, candidate, executionError }) {
       if (executionError) return { status: "failure", reason: String(executionError) };
       if (observer === "vision") {
@@ -191,10 +199,10 @@ try {
         ? { status: "success" } : { status: "failure", reason: "board did not change" };
     } },
     trace: liveTrace,
-  }, { id: "reach-tile", description: `Reach a ${target} tile in 2048` });
+  }, definition.goal);
 
   console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; target ${target}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
-  if (verbose) console.log(`[verbose] move selector: ${useAi ? `AI reflex (${model})` : `policy ${JSON.stringify(policy)}`}; tactician/strategist: not configured`);
+  console.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
   let finalState: Game2048State | undefined;
   let moves = 0;
   let stopReason = "no-action";
@@ -203,6 +211,7 @@ try {
     for (let step = 0; (steps === undefined || step < steps) && !stop; step++) {
       if (finalState.over || finalState.won || Math.max(...finalState.board.flat()) >= target) break;
       if (verbose) console.log(`[verbose] turn ${step + 1} board: ${JSON.stringify(finalState.board)}`);
+      playerSequence = step + 1;
       const result = await session.step();
       if (stop) break;
       finalState = (result.after ?? await game.observe()).state;
@@ -238,6 +247,7 @@ try {
     stopReason,
     tracePath: trace.path,
     toolDrafts,
+    ...(models ? { modelUsage: models.usage } : {}),
     ...(visionModel ? { visionUsage } : {}),
     ...(screenshotPath && finalState ? { screenshotPath } : {}),
   }, null, 2));

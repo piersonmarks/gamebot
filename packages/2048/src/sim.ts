@@ -15,7 +15,7 @@ export interface SimResult {
   elapsedMs: number;
 }
 
-class Sim2048 implements GameAdapter<Game2048State, Direction> {
+export class Sim2048 implements GameAdapter<Game2048State, Direction> {
   private randomState: number;
   private revision = 0;
   readonly state: Game2048State = { board: Array.from({ length: 4 }, () => [0, 0, 0, 0]), score: 0, over: false, won: false };

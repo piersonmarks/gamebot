@@ -56,6 +56,9 @@ export async function startViewer() {
       latest = state;
       for (const client of clients) client.write(`data: ${JSON.stringify(state)}\n\n`);
     },
-    close: () => new Promise<void>(resolve => server.close(() => resolve())),
+    close: () => new Promise<void>(resolve => {
+      for (const client of clients) client.end();
+      server.close(() => resolve());
+    }),
   };
 }

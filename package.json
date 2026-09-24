@@ -6,7 +6,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist/core", "dist/eval", "dist/memory", "dist/models", "dist/skills", "dist/index.*", "README.md"],
+  "files": ["dist/core", "dist/eval", "dist/memory", "dist/learning", "dist/models", "dist/skills", "dist/index.*", "README.md"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -29,6 +29,7 @@
   "dependencies": {
     "@types/node": "^22.20.3",
     "ai": "^7.0.111",
+    "quickjs-emscripten": "^0.32.0",
     "typescript": "^5.9.3",
     "zod": "^4.6.5"
   }

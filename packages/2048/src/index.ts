@@ -118,3 +118,5 @@ export class Game2048 implements GameAdapter<Game2048State, Direction> {
     }, before, { timeout: 1500 });
   }
 }
+
+export { learning2048 } from "./learning.js";

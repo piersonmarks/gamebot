@@ -1,19 +1,23 @@
 # Gamebot
 
-Gamebot is an early TypeScript runtime for comparing ways to play games with fast decisions, optional slower reasoning, and executable skills. Local path, Chess, and Snake games are runnable in this workspace. The 2048 browser bridge plays the creator's live Classic website; other external-game bridges require their games to be installed and running separately.
+Gamebot is an early TypeScript runtime for comparing ways to play games with a strategist, tactician, fast reflex/JEV decisions, and executable skills. Local path, Chess, and Snake games are runnable in this workspace. The 2048 browser bridge plays the creator's live Classic website; other external-game bridges require their games to be installed and running separately.
 
 ## Start a game
 
 ```sh
 npm install
+export AI_GATEWAY_API_KEY='your-key'
+export GAMEBOT_MODEL='provider/model-id'
 npm run game -- --game=2048
 ```
+
+Replace the model placeholder with an available AI SDK model ID. Configure `GAMEBOT_STRATEGIST_MODEL`, `GAMEBOT_TACTICIAN_MODEL`, and `GAMEBOT_REFLEX_MODEL` to use different models per tier. 2048 and Snake start AI-first; `--policy=builtin` explicitly runs their older heuristics without model calls. See the [learning guide](docs/learning.md) for configuration and research.
 
 The launcher lists installed playable bridges with `npm run game -- --list`. Choose `--game=chess` for a terminal board or `--game=snake` for a local browser viewer. Game options follow the ID, for example `npm run game -- --game=2048 --seed=42` or `npm run game -- --game=chess --ai`. Each bridge declares its own launch defaults; the launcher builds core, the selected local bridge, and its local dependencies before starting it. `npm run build` remains the explicit full-workspace build.
 
 To watch the path game play out in the terminal, run `npm run watch`. It shows the agent's position, chosen action, verification result, and any tactical or strategic directive change at a readable pace.
 
-Chess and Snake are separate installable workspace bridges, not part of the core runtime. The older `npm run chess` and `npm run snake` shortcuts still work. Pass `--seed=42` to vary the starting game, or `--ai` to use `GAMEBOT_REFLEX_MODEL` / `GAMEBOT_MODEL` instead of the deterministic heuristic:
+Chess and Snake are separate installable workspace bridges, not part of the core runtime. The older `npm run chess` and `npm run snake` shortcuts still work. Pass `--seed=42` to vary the starting game. Chess still uses `--ai` to opt into model decisions; Snake uses the three-tier player by default:
 
 ```sh
 npm run chess -- --seed=42
@@ -29,15 +33,15 @@ npm run game -- --game=2048
 
 The bridge opens [Classic 2048](https://classic.play2048.co/) directly, so no game download is needed. It reuses an installed Chrome or Chromium when Playwright's own browser is absent, downloading Chromium only if it cannot find one. Use `--game-dir=/path/to/2048` for an existing checkout when you want to play offline.
 
-The default run plays until 2048 or game over; pass `--turns=100` (or `--steps=100`) or `--target=128` when you want a shorter experiment. Ctrl+C interrupts a run. Add `--verbose` to see candidate moves, how the heuristic or AI reflex selected one, verification, and runtime events. The final output reports why it stopped.
+The default run plays until 2048 or game over; pass `--turns=100` (or `--steps=100`) or `--target=128` when you want a shorter experiment. Ctrl+C interrupts a run. Add `--verbose` to see candidate moves, strategist setup, tactical reviews, AI-versus-code decisions, verification, and model usage. The final output reports why it stopped.
 
-For repeated 2048 experiments, run `npm run autoplay -- --game=2048`. The research runner plays seeded simulations, records outcomes, proposes policy changes, compares revisions on matched training and fresh validation games, and audits the selected revision on previously unseen test games before saving it for later research runs. A normal `npm run game -- --game=2048` uses the built-in policy; pass `--policy=latest` to play with the saved research policy. Add `--watch` to open a visible browser game with the selected policy when research finishes. The initial proposal surface covers move-scoring features and one-step lookahead; set `GAMEBOT_RESEARCH_MODEL` for model-proposed revisions. See the [2048 bridge guide](packages/2048/README.md) for limits and options.
+For repeated experiments, run `npm run autoplay -- --game=2048` or `--game=snake`. The shared researcher evaluates gameplay, proposes competing hypotheses, and revises the complete player: prompts, review intervals, generated JavaScript, or hybrid AI/code decisions. Revisions must pass matched training and fresh validation comparisons, then a final audit before publication. Research resumes its latest evaluated player; add `--fresh` to start from rules again. Ordinary play always starts a new AI player unless you pass `--policy=latest` or a specific artifact path. Add `--watch` to research to open a game with its selected policy. See the [learning guide](docs/learning.md) for budgets, evidence, model configuration, and the game integration interface.
 
-For a vision experiment, set `AI_GATEWAY_API_KEY` and run `npm run game -- --game=2048 --observe=vision --steps=10`. This sends browser screenshots to a vision-capable AI Gateway model, defaulting to Gemini, and validates the returned board state. Set `GAMEBOT_VISION_MODEL` to compare another model. The usual run reads structured state from the page without model calls.
+For a vision experiment, set `AI_GATEWAY_API_KEY` and run `npm run game -- --game=2048 --observe=vision --steps=10`. This sends browser screenshots to a vision-capable AI Gateway model, defaulting to Gemini, and validates the returned board state. Set `GAMEBOT_VISION_MODEL` to compare another model. The usual observer reads structured state from the page without vision calls; the player still uses its configured reasoning models.
 
 The bridge packages are [`@gamebot/chess`](packages/chess), [`@gamebot/snake`](packages/snake), [`@gamebot/browser`](packages/browser), [`@gamebot/2048`](packages/2048), [`@gamebot/openrct2`](packages/openrct2), and [`@gamebot/runebench`](packages/runebench). Snake's `--window` option serves a read-only local browser viewer and keeps the final board visible until Ctrl+C. The browser bridge controls separately hosted HTML5 games in a visible Playwright page, using game-specific DOM or structured state; screenshots are optional. The 2048 package is the first game-specific browser integration. OpenRCT2 connects to the separately installed openrct2-bridge plugin; RuneBench accepts the SDK and bot supplied by a separate rs-sdk checkout. OpenRCT2 and RuneBench have not been exercised against live games in this workspace. Runs write traces under `.gamebot/traces/` in the current working directory. The root package `@gamebot/core` has no game dependency. These packages are available locally through npm workspaces; they have not been published to a registry.
 
-Each bridge runner creates a writable `.gamebot/games/<game>/tools/` area for game-scoped tool drafts and prints its path. Drafts are not loaded or run automatically; reviewed implementations belong in that bridge's `tools/` source directory and require explicit registration.
+Game-scoped `tools/` drafts are not loaded automatically. Evaluated player artifacts provide a separate route for generated code, executed in an isolated engine rather than imported into the host process.
 
 To run the same demo through actual models, set an [AI Gateway](https://ai-sdk.dev/docs/getting-started/choosing-a-provider) key and a current model ID, then run `npm run watch:ai`:
 
@@ -54,6 +58,7 @@ The demo runs the same deterministic environment with reflex only, reflex plus t
 ## Modules and ownership
 
 - [`src/core`](src/core/index.ts) owns one session's goal, current directive, revision checks, candidate selection, action dispatch, skill progress and cancellation, verification, scheduling, and trace events. The game adapter owns native state and action meaning. The reflex chooses an offered candidate ID. Reasoners submit proposals; the coordinator checks the proposal's basis before activation. Each step advances at most one skill action so observations and interrupts can occur between actions. A file trace sink persists authority and observation revisions with each event.
+- [`src/learning`](src/learning/index.ts) owns initial strategic setup, three-tier play, AI/code/hybrid policy artifacts, isolated code execution, and the shared experiment/promotion loop. The 2048 and Snake packages supply the game rules and fixed evaluators.
 - [`src/skills`](src/skills/index.ts) discovers standard [`SKILL.md`](https://agentskills.io/specification) packages and loads instructions on demand. A replaceable injector selects relevant skills for each model decision. Executable skills require separate registration and return one proposed action or a terminal outcome per progress call. The session runtime validates and dispatches proposed actions.
 - [`src/memory`](src/memory/index.ts) records scoped episodes, validates proposed lessons against cited episodes, writes versioned snapshots, and lets research runs pin a snapshot. Retrieval is replaceable; its initial implementation uses lexical matching. Game version and world/save scope prevent accidental cross-game recall.
 - [`src/eval`](src/eval/harness.ts) runs configurations on fresh sessions, waits for a terminal skill outcome after a game goal is reached, settles background work, then reports gameplay and reasoning metrics.

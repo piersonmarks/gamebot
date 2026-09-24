@@ -1,16 +1,19 @@
 # @gamebot/snake
 
-Seeded grid Snake bridge for `@gamebot/core`. It has its own game rules, Gamebot adapter, terminal runner, and no chess dependency. The objective is to eat five pieces of food without colliding.
+Seeded grid Snake bridge for `@gamebot/core`. It owns its rules and game adapter. The default objective is five pieces of food without colliding; `--target` changes it.
 
-From the Gamebot workspace:
+After [configuring the three models](../../docs/learning.md):
 
 ```sh
-npm run game -- --game=snake
-npm run game -- --game=snake --seed=42
+npm run game -- --game=snake --verbose
+npm run autoplay -- --game=snake --fresh --rounds=5 --games=3
+npm run game -- --game=snake --policy=latest
 ```
 
-Add `--ai` and set `GAMEBOT_REFLEX_MODEL` or `GAMEBOT_MODEL` to use a model instead of the deterministic safe-distance heuristic. The score is food eaten divided by five; an episode ends on collision or reaching the food target. The executable is `gamebot-snake` when this package is installed.
+Ordinary play starts AI-first with strategic setup, tactical reviews, and reflex/JEV action selection. It never loads a learned policy implicitly. `--policy=latest` or an artifact path explicitly selects a saved player; `--policy=builtin` runs the older safe-distance heuristic without model calls. `--ai` is an alias for the default behavior.
 
-The unified command enables `--window` by default and prints a local browser URL for a read-only live board. The runner stays open after the episode so the result remains visible; press Ctrl+C to close it.
+Research uses the same shared runner as 2048, including AI/code/hybrid revisions, isolated generated code, matched comparisons, and versioned evidence. See the [learning guide](../../docs/learning.md) for configuration and budgets. Snake's fixed evaluation score is food eaten; collisions end an episode as a loss.
 
-The runner creates a writable `.gamebot/games/snake/tools/` directory in the current working directory for agent-authored drafts. The package's [`tools/`](tools) directory is reserved for reviewed game-specific implementations. A draft may analyze Snake state or propose a direction, but it does not become callable merely by being placed there; the bridge must register it explicitly.
+The unified game command enables `--window` and prints a local browser URL for a read-only live board. `--watch` also prints a terminal board. `--seed`, `--turns`, `--pace`, `--max-calls`, and `--verbose` configure play. Ctrl+C interrupts decisions and closes the viewer. The final board stays visible after the episode until interrupted.
+
+Player artifacts are separate from inert `tools/` drafts; arbitrary files in that directory are not automatically executed.

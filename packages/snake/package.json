@@ -12,7 +12,7 @@
     }
   },
   "bin": { "gamebot-snake": "./dist/cli.js" },
-  "gamebot": { "playable": true, "defaultArgs": ["--window"] },
+  "gamebot": { "playable": true, "defaultArgs": ["--window"], "researchBin": "./dist/research.js" },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "play": "node dist/cli.js"
