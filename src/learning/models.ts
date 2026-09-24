@@ -3,6 +3,13 @@ import { z } from "zod";
 
 export type PlayerRole = "strategist" | "tactician" | "reflex";
 export type PlayerModels = Record<PlayerRole, LanguageModel>;
+/** Pinned Gateway defaults; environment overrides remain authoritative. */
+export const defaultPlayerModels = {
+  strategist: "openai/gpt-6-astra",
+  tactician: "openai/gpt-6-sol",
+  // Temporary AI fallback when HierarchicalPlayer has no injected JEV/reflex backend.
+  reflex: "openai/gpt-6-luna",
+} as const;
 export type LearningEvent = { type: string; detail: unknown };
 export type LearningReporter = (event: LearningEvent) => void | Promise<void>;
 export class ModelBudgetExceeded extends Error {}
@@ -42,12 +49,12 @@ export class PlayerModelRunner {
 export function playerModelsFromEnv(): PlayerModels {
   const fallback = process.env.GAMEBOT_MODEL;
   const models = {
-    strategist: process.env.GAMEBOT_STRATEGIST_MODEL ?? process.env.GAMEBOT_RESEARCH_MODEL ?? fallback,
-    tactician: process.env.GAMEBOT_TACTICIAN_MODEL ?? fallback,
-    reflex: process.env.GAMEBOT_REFLEX_MODEL ?? fallback,
+    strategist: process.env.GAMEBOT_STRATEGIST_MODEL ?? process.env.GAMEBOT_RESEARCH_MODEL ?? fallback ?? defaultPlayerModels.strategist,
+    tactician: process.env.GAMEBOT_TACTICIAN_MODEL ?? fallback ?? defaultPlayerModels.tactician,
+    reflex: process.env.GAMEBOT_REFLEX_MODEL ?? fallback ?? defaultPlayerModels.reflex,
   };
   for (const [role, model] of Object.entries(models)) {
-    if (!model) throw new Error(`Set GAMEBOT_${role.toUpperCase()}_MODEL (or GAMEBOT_MODEL) to an AI SDK model ID. Configure the strongest model for strategist.`);
+    if (!model.trim()) throw new Error(`The ${role} model override must not be empty; unset it to use the default.`);
   }
-  return models as PlayerModels;
+  return models;
 }

@@ -4,16 +4,21 @@
 
 ## Configure models once
 
-Install dependencies with `npm install`. Configure AI Gateway credentials and model IDs from its current catalog:
+Install dependencies with `npm install`, then configure your AI Gateway key:
 
 ```sh
 export AI_GATEWAY_API_KEY='your-key'
-export GAMEBOT_STRATEGIST_MODEL='provider/strong-model-id'
-export GAMEBOT_TACTICIAN_MODEL='provider/tactical-model-id'
-export GAMEBOT_REFLEX_MODEL='provider/fast-model-id'
 ```
 
-These are placeholders. Use the strongest available reasoning model for strategist, such as Astra when available through your provider. GameBot does not assume a provider ID for that name. `GAMEBOT_MODEL` supplies a fallback for any unset role; `GAMEBOT_RESEARCH_MODEL` is also accepted as a strategist fallback. Programmatic callers can pass any AI SDK `LanguageModel` implementation.
+2048 and Snake use these pinned defaults, verified in the [Gateway catalog](https://ai-gateway.vercel.sh/v1/models) on 2026-09-24:
+
+| Role | Default model | Purpose |
+| --- | --- | --- |
+| Strategist/researcher | `openai/gpt-6-astra` | Overall strategy, failure analysis and program revisions |
+| Tactician | `openai/gpt-6-sol` | Tactical planning and escalation |
+| Reflex AI fallback | `openai/gpt-6-luna` | Temporary action selection until a JEV backend is connected |
+
+All three advertise structured-output support. These are starting choices for capability and cost, not game-specific benchmark winners. No model ID configuration is required to start. `GAMEBOT_STRATEGIST_MODEL`, `GAMEBOT_TACTICIAN_MODEL` and `GAMEBOT_REFLEX_MODEL` override individual defaults. Resolution order is the role-specific variable, then `GAMEBOT_RESEARCH_MODEL` for strategist only, then `GAMEBOT_MODEL`, then the built-in default. Empty overrides are rejected; unset a variable to restore its fallback. Programmatic callers can pass any AI SDK `LanguageModel` implementation. Credentials are configured separately and never supplied by a default.
 
 ## Play or research
 
@@ -52,7 +57,7 @@ Before the first action, the strategist understands the rules, enumerates altern
 
 The tactician translates the strategy into immediate objectives and reviews recent outcomes. It can escalate to the strategist. The reflex/JEV role chooses an offered action. Strategy and tactics are distinct session state; tactical updates do not overwrite the strategic plan. Reviews occur at the selected intervals and on game signals. The current turn-based integrations await these reviews. The underlying session runtime still reobserves and validates the action before dispatch, and a changed user goal cancels in-flight work and starts fresh planning.
 
-The default fast backend uses the configured AI SDK model. A dedicated Open-Jev model is not bundled. `HierarchicalPlayer` also accepts an optional `reflex` implementation through the existing `Reflex<State, Action>` interface, allowing a local/JEV backend to receive the current strategy and tactic without changing the higher tiers.
+JEV is the intended reflex backend; Luna is only the temporary AI fallback, not an implementation of JEV. The CLI currently uses that fallback because no Open-Jev integration is implemented or bundled. `HierarchicalPlayer` accepts an optional `reflex` implementation through the existing `Reflex<State, Action>` interface, allowing a local/JEV backend to receive the current strategy and tactic without changing the higher tiers. When supplied, that backend replaces the fallback for AI decisions; generated code policies can still handle actions directly.
 
 ## What research can change
 
