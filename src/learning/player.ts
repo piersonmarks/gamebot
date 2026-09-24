@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Candidate, DecisionContext, Observation, Reflex } from "../core/index.js";
 import { playerPolicySchema, type LearningGame, type PlayerPolicy } from "./policy.js";
 import { PlayerModelRunner, type LearningReporter } from "./models.js";
-import { runPolicyCode } from "./code.js";
+import { runPolicyDecision } from "./code.js";
 
 export async function initializePlayer<State, Action>(
   game: LearningGame<State, Action>, observation: Observation<State>, models: PlayerModelRunner,
@@ -16,7 +16,7 @@ export async function initializePlayer<State, Action>(
 Enumerate competing approaches, choose an initial hypothesis, and choose review intervals measured in decisions.
 Start with an AI policy (kind ai, code null, jev null). We must collect gameplay evidence before proposing executable code or custom Jev questions.
 The goal defines success; do not assume it is attainable. No built-in solution or examples are supplied.`, {
-    rules: game.rules, goal: game.goal, observation,
+    rules: game.rules, goal: game.goal, evaluation: game.evaluation, observation,
   }, signal);
   if (plan.policy.kind !== "ai" || plan.policy.jev !== null) throw new Error("Initial player must be AI-first with default Jev questions");
   await report?.({ type: "player.initialized", detail: plan });
@@ -28,8 +28,8 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
   private policy?: PlayerPolicy;
   private strategy?: string;
   private tactic?: string;
-  private lastStrategist = -Infinity;
-  private lastTactician = -Infinity;
+  private nextStrategist = 0;
+  private nextTactician = 0;
   private goalRevision?: number;
   private directiveRevision?: number;
   private recent: unknown[] = [];
@@ -60,28 +60,43 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
         this.options.models, signal, this.options.report);
       this.strategy = this.policy.strategy;
       this.tactic = undefined;
-      this.lastStrategist = context.sequence;
+      this.nextStrategist = context.sequence + this.policy!.strategistEvery;
     }
     const evidence = {
-      rules: this.options.game.rules, authority: context.authority, observation: context.observation,
+      rules: this.options.game.rules, evaluation: this.options.game.evaluation, authority: context.authority, observation: context.observation,
       signals: context.signals, lastVerification: context.lastVerification, recent: this.recent,
     };
+    this.strategy ??= this.policy.strategy;
+    let immediateAction: string | null = null;
+    const input = (reviewCompleted = false) => ({
+      state: context.observation.state, candidates, goal: context.authority.goal,
+      directive: context.authority.directive, strategy: this.strategy, tactic: this.tactic ?? this.policy!.tactics,
+      immediateAction, recent: this.recent, signals: context.signals, reviewCompleted,
+    });
+    // An autonomous program must explicitly request supervision; otherwise reviews cannot affect it.
+    let decision = this.policy.kind === "ai" ? { candidateId: null, review: null }
+      : await runPolicyDecision(this.policy.code!, input(), signal);
+    const usesAI = this.policy.kind === "ai" || this.policy.kind === "hybrid" && decision.candidateId === null;
     const reviseStrategy = async (reason: string) => {
-      const result = await this.options.models.ask("strategist", z.object({ strategy: z.string().min(1).max(12000), reason: z.string() }),
-        "Review progress toward the user goal. Revise the overall strategy and delegate concrete objectives to the tactician. Code changes belong to evaluated research revisions; do not claim to execute code here.",
+      const result = await this.options.models.ask("strategist", z.object({
+        strategy: z.string().min(1).max(12000), reason: z.string(),
+        nextReviewIn: z.number().int().min(1).max(2048).default(this.policy!.strategistEvery),
+      }), "Review progress toward the user goal. Revise the overall strategy and delegate concrete objectives to the tactician. Choose nextReviewIn decisions based on current risk and progress: extend autonomy when reliable, shorten it when uncertain. Code changes belong to evaluated research revisions; do not claim to execute code here.",
         { ...evidence, policy: this.policy, strategy: this.strategy, trigger: reason }, signal);
       this.strategy = result.strategy;
-      this.lastStrategist = context.sequence;
+      this.nextStrategist = context.sequence + result.nextReviewIn;
       await this.options.report?.({ type: "strategy.updated", detail: result });
     };
-    const reviewStrategy = !this.strategy || directiveChanged || context.signals.goalBlocked || context.signals.novel ||
-      context.sequence - this.lastStrategist >= this.policy.strategistEvery;
-    if (reviewStrategy) await reviseStrategy("initial setup, review interval or game signal");
-    if (!this.tactic || reviewStrategy || context.signals.tacticFailed || context.signals.urgent || context.signals.invalidated ||
-        context.lastVerification?.status === "failure" || context.sequence - this.lastTactician >= this.policy.tacticianEvery) {
+    const reviewStrategy = decision.review === "strategist" || usesAI && (directiveChanged ||
+      context.signals.goalBlocked || context.signals.novel || context.sequence >= this.nextStrategist);
+    if (reviewStrategy) await reviseStrategy(decision.review ? "program requested review" : "review due or game signal");
+    if (decision.review || usesAI && (!this.tactic || reviewStrategy || context.signals.tacticFailed || context.signals.urgent ||
+        context.signals.invalidated || context.lastVerification?.status === "failure" || context.sequence >= this.nextTactician)) {
       const reviewTactics = () => this.options.models.ask("tactician", z.object({
-        instruction: z.string().min(1).max(6000), escalate: z.boolean(), reason: z.string(),
-      }), "Translate the strategist's plan into an immediate objective for the reflex/JEV layer. Inspect recent outcomes. Escalate if the overall strategy needs reconsideration; preserve the authoritative user goal.",
+        instruction: z.string().min(1).max(6000), immediateAction: z.string().max(2000).nullable().default(null),
+        nextReviewIn: z.number().int().min(1).max(256).default(this.policy!.tacticianEvery),
+        escalate: z.boolean(), reason: z.string(),
+      }), "Translate the strategist's plan into a lasting objective in instruction, never a move to repeat blindly. Put any advice about the current move ONLY in immediateAction; it expires after this decision. Choose nextReviewIn decisions adaptively from current risk and progress. Inspect recent outcomes and escalate when strategy needs reconsideration. Preserve the authoritative user goal.",
       { ...evidence, strategy: this.strategy, responsibilities: this.policy!.tactics, previousTactic: this.tactic }, signal);
       let result = await reviewTactics();
       if (result.escalate && !reviewStrategy) {
@@ -89,37 +104,34 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
         result = await reviewTactics();
       }
       this.tactic = result.instruction;
-      this.lastTactician = context.sequence;
-      await this.options.report?.({ type: "tactic.updated", detail: result });
+      immediateAction = result.immediateAction;
+      this.nextTactician = context.sequence + result.nextReviewIn;
+      await this.options.report?.({ type: "tactic.updated", detail: { ...result, immediateActionExpiresAfter: context.sequence } });
     }
-    const input = {
-      state: context.observation.state, candidates, goal: context.authority.goal,
-      directive: context.authority.directive, strategy: this.strategy, tactic: this.tactic, recent: this.recent,
-    };
-    let choice: string | null = null;
-    let source = "ai";
-    if (this.policy.kind !== "ai") {
-      choice = await runPolicyCode(this.policy.code!, input, signal);
-      source = "code";
-      if (choice === null && this.policy.kind === "code") throw new Error("Code policy returned null; only hybrid policies may delegate to AI");
+    if (decision.review || usesAI && this.policy.kind === "hybrid") {
+      decision = await runPolicyDecision(this.policy.code!, input(true), signal);
+      if (decision.review) throw new Error("Program requested a second review in the same decision");
     }
+    let choice = decision.candidateId;
+    let source = "code";
+    if (choice === null && this.policy.kind === "code") throw new Error("Code policy returned null; only hybrid policies may delegate to AI");
     if (choice === null) {
       source = this.options.reflex ? "reflex-backend" : "evaluation";
       if (this.options.reflex) {
         choice = await this.options.reflex.choose({ ...context, authority: { ...context.authority,
           directive: { id: "hierarchical-player", instruction: [context.authority.directive?.instruction,
-            this.strategy, this.tactic, this.policy.reflex].filter(Boolean).join("\n"),
-            parameters: { strategy: this.strategy, tactic: this.tactic } },
+            this.strategy, this.tactic, immediateAction, this.policy.reflex].filter(Boolean).join("\n"),
+            parameters: { strategy: this.strategy, tactic: this.tactic, immediateAction } },
         } }, candidates, signal);
       } else {
         choice = await this.options.models.choose(candidates,
-          { ...input, rules: this.options.game.rules, responsibilities: this.policy.reflex }, signal, this.policy.jev, this.options.report);
+          { ...input(), rules: this.options.game.rules, responsibilities: this.policy.reflex }, signal, this.policy.jev, this.options.report);
       }
     }
     if (!candidates.some(candidate => candidate.id === choice)) throw new Error(`Player selected unoffered candidate: ${choice}`);
     this.recent.push({ state: context.observation.state, candidateId: choice, lastVerification: context.lastVerification });
     this.recent = this.recent.slice(-8);
-    await this.options.report?.({ type: "player.decision", detail: { candidateId: choice, source } });
+    await this.options.report?.({ type: "player.decision", detail: { candidateId: choice, source, strategy: this.strategy, tactic: this.tactic, immediateAction, nextStrategist: this.nextStrategist, nextTactician: this.nextTactician } });
     return choice;
   }
 }

@@ -5,7 +5,7 @@ import { resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { FileTraceSink, SessionRuntime, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
-  playerModelsFromEnv, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent } from "@gamebot/core";
+  playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
 import { learning2048 } from "./learning.js";
@@ -26,25 +26,10 @@ const policyPath = argument("policy");
 const useAi = process.argv.includes("--ai");
 if (useAi && policyPath !== undefined) throw new Error("Use either --ai or --policy, not both");
 const definition = learning2048(seed => browser.create(seed, definition.goal.id === "maximize-score"), target, argument("goal"));
-const maximizeScore = definition.goal.id === "maximize-score";
+let maximizeScore = definition.goal.id === "maximize-score";
 if (maximizeScore && argument("target") !== undefined) throw new Error('--target only applies to --goal="win"');
 let policy: Policy2048 | undefined;
 let learnedPolicy: PlayerPolicy | undefined;
-if (policyPath === "builtin") policy = defaultPolicy;
-else if (policyPath === "latest") {
-  try { learnedPolicy = await loadPlayer(policyPath, definition); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    if (maximizeScore || target !== 2048) throw error;
-    policy = policySchema.parse(JSON.parse(await readFile(resolve(".gamebot", "games", "2048", "active-policy.json"), "utf8")));
-  }
-}
-else if (policyPath !== undefined) {
-  if (!policyPath) throw new Error("--policy requires a file path or latest");
-  const saved = JSON.parse(await readFile(resolve(policyPath), "utf8"));
-  if (saved.format === "gamebot-player-v1" || saved.format === "gamebot-player-v2") learnedPolicy = await loadPlayer(policyPath, definition);
-  else policy = policySchema.parse(saved); // Explicit legacy weight-file replay remains supported.
-}
 if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
     !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed) || !Number.isSafeInteger(pace) || pace < 0) {
   throw new Error("--turns/--steps (if provided) and --target must be positive integers; --seed must be an integer; --pace must be a nonnegative integer");
@@ -53,7 +38,7 @@ const headless = process.argv.includes("--headless");
 const verbose = process.argv.includes("--verbose");
 const observer = argument("observe") ?? "dom";
 if (observer !== "dom" && observer !== "vision") throw new Error("--observe must be dom or vision");
-const playerModels = policy ? undefined : playerModelsFromEnv();
+const playerModels = playerModelsFromEnv();
 const maxCalls = Number(argument("max-calls") ?? 10000);
 if (!Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("--max-calls must be positive");
 const visionModel = observer === "vision" ? process.env.GAMEBOT_VISION_MODEL ?? process.env.GAMEBOT_MODEL ?? "google/gemini-3.8-flash" : undefined;
@@ -79,8 +64,28 @@ const onInterrupt = () => {
   console.log("\nStopping Gamebot...");
 };
 process.once("SIGINT", onInterrupt);
+const setupEvents: LearningEvent[] = [];
+const models = new PlayerModelRunner(playerModels, maxCalls, event => { setupEvents.push(event); });
 try {
-  await browser.open(headless, undefined, onInterrupt);
+  await resolveGameGoal(definition, models, visionAbort.signal);
+  maximizeScore = definition.evaluation?.objective === "score";
+  if (maximizeScore && argument("target") !== undefined) throw new Error('--target only applies to achievement goals');
+  if (policyPath === "builtin") policy = defaultPolicy;
+  else if (policyPath === "latest") {
+    try { learnedPolicy = await loadPlayer(policyPath, definition); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (maximizeScore || target !== 2048 || definition.requestedGoal) throw error;
+      policy = policySchema.parse(JSON.parse(await readFile(resolve(".gamebot", "games", "2048", "active-policy.json"), "utf8")));
+    }
+  }
+  else if (policyPath !== undefined) {
+    if (!policyPath) throw new Error("--policy requires a file path or latest");
+    const saved = JSON.parse(await readFile(resolve(policyPath), "utf8"));
+    if (saved.format === "gamebot-player-v1" || saved.format === "gamebot-player-v2") learnedPolicy = await loadPlayer(policyPath, definition);
+    else policy = policySchema.parse(saved); // Explicit legacy weight-file replay remains supported.
+  }
+  await browser.open(headless, visionAbort.signal, onInterrupt);
   await browser.create(seed, maximizeScore);
   const page = browser.page;
 
@@ -118,7 +123,8 @@ try {
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 },
     detail: event.detail,
   });
-  const models = playerModels ? new PlayerModelRunner(playerModels, maxCalls, reportLearning) : undefined;
+  models.report = reportLearning;
+  for (const event of setupEvents) await reportLearning(event);
   session = new SessionRuntime<Game2048State, Direction>({
     adapter: game,
     candidates: policy ? { generate: candidates2048 } : definition.candidates,
@@ -148,6 +154,7 @@ try {
   }, definition.goal);
 
   console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
+  console.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
   console.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
   let finalState: Game2048State | undefined;
   let moves = 0;

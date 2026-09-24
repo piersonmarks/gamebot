@@ -30,8 +30,20 @@ export async function runPolicyProgram(source: string, entry: "choose" | "prepar
   return JSON.parse(result);
 }
 
-export async function runPolicyCode(source: string, input: unknown, signal: AbortSignal): Promise<string | null> {
+export type ProgramDecision = { candidateId: string | null; review: "tactician" | "strategist" | null };
+
+export async function runPolicyDecision(source: string, input: unknown, signal: AbortSignal): Promise<ProgramDecision> {
   const result = await runPolicyProgram(source, "choose", input, signal);
+  if (result === null || typeof result === "string" && result.length <= 1024) return { candidateId: result, review: null };
+  if (typeof result !== "object") throw new Error("choose must return an ID, null, or { candidateId, review }");
+  const decision = result as ProgramDecision;
+  if ((decision.candidateId !== null && (typeof decision.candidateId !== "string" || decision.candidateId.length > 1024)) ||
+      ![null, "tactician", "strategist"].includes(decision.review)) throw new Error("Invalid program decision");
+  return decision;
+}
+
+export async function runPolicyCode(source: string, input: unknown, signal: AbortSignal): Promise<string | null> {
+  const result = (await runPolicyDecision(source, input, signal)).candidateId;
   if (result !== null && (typeof result !== "string" || result.length > 1024)) throw new Error("choose must return a candidate ID or null");
   return result;
 }

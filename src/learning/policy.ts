@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { z } from "zod";
 import type { CandidateGenerator, GameAdapter, Goal, Verifier } from "../core/index.js";
+import { evaluationSchema, type GoalEvaluation } from "./goal.js";
 import { jevPolicySchema } from "./judgment.js";
 
 /** Rules and evaluation stay in the game package, outside the editable player. State/actions must serialize as JSON. */
@@ -11,6 +12,11 @@ export interface LearningGame<State, Action> {
   version: string;
   rules: string;
   goal: Goal;
+  evaluation?: GoalEvaluation;
+  requestedGoal?: string;
+  goalOptions?: Record<string, { description: string; objective: "achievement" | "score";
+    outcome(state: State): { done: boolean; won: boolean; score: number } }>;
+
   create(seed: number): GameAdapter<State, Action> | Promise<GameAdapter<State, Action>>;
   candidates: CandidateGenerator<State, Action>;
   verifier: Verifier<State, Action>;
@@ -39,6 +45,7 @@ export const playerPolicySchema = z.object({ ...policyFields, jev: jevPolicySche
 export type PlayerPolicy = z.infer<typeof playerPolicySchema>;
 
 const artifactFields = {
+  evaluation: evaluationSchema.optional(),
   gameId: z.string(),
   gameVersion: z.string(),
   goal: z.object({ id: z.string(), description: z.string() }),
@@ -79,11 +86,19 @@ export async function loadPlayer<State, Action>(selection: string, game: Learnin
       artifact.goal.id !== game.goal.id || artifact.goal.description !== game.goal.description) {
     throw new Error("Policy game, version or goal does not match this run");
   }
+  if (artifact.evaluation && JSON.stringify(artifact.evaluation) !== JSON.stringify(game.evaluation)) {
+    throw new Error("Policy evaluation contract does not match this run");
+  }
   return artifact.policy;
 }
 
 export const codeContract = `Code must define a synchronous function choose(input) returning an offered candidate ID.
 For hybrid policies only, return null to delegate the current decision to the AI reflex.
+Alternatively return {candidateId: an offered ID or null, review: "tactician" | "strategist" | null}.
+Code runs before supervision. Periodic reviews apply only to AI decisions; autonomous code pays no model cost.
+Request a review conditionally using current observations when it can affect your decision. After a requested review,
+choose is called once more with updated strategy/tactic and reviewCompleted=true; it must not request another review.
+The tactic is a lasting objective; immediateAction is advice valid only for this decision. Code cannot rewrite its own program during play.
 input contains state (the observed game state), candidates (id, description, action), goal, directive, strategy, tactic, and recent decisions.
 Use plain JavaScript with helper functions as needed. Each invocation is fresh: no persistent globals.
 There are no imports, filesystem, network, process, clock or random APIs. Only JSON observations enter the isolated engine.

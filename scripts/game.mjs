@@ -67,7 +67,7 @@ if (!id || args.includes("--help") || args.includes("--list")) {
       const legacyDirectory = join(game.directory, ".gamebot");
       const imported = join(dataDirectory, `.imported-${id}`);
       // Preserve old package-local saves, without replacing root saves or changing cold-start shared state.
-      if (!options.includes("--cold-start") && !existsSync(imported) && existsSync(legacyDirectory)) {
+      if (!options.includes("--cold-start") && !options.some(arg => arg === "--resume" || arg.startsWith("--resume=")) && !existsSync(imported) && existsSync(legacyDirectory)) {
         await cp(legacyDirectory, dataDirectory, { recursive: true, force: false, errorOnExist: false });
         await writeFile(imported, `${await realpath(legacyDirectory)}\n`);
         console.log(`Imported missing saves from ${legacyDirectory}; originals are retained.`);

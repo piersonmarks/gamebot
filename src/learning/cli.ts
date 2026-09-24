@@ -1,7 +1,10 @@
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { resolveGameGoal } from "./goal.js";
 import { randomInt } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadPlayer, type LearningGame } from "./policy.js";
-import { PlayerModelRunner, playerModelsFromEnv, type LearningReporter } from "./models.js";
+import { PlayerModelRunner, playerModelsFromEnv, type LearningReporter, type LearningEvent } from "./models.js";
 import { runResearch } from "./research.js";
 import { openGameWindow, startResearchViewer, type ResearchViewerOptions } from "./viewer.js";
 
@@ -16,6 +19,11 @@ export function learningArgument(name: string): string | undefined {
 
 export function learningConsole(verbose = false): LearningReporter {
   return event => {
+    if (event.type === "goal.resolved") {
+      const { goal, evaluation } = event.detail as { goal: { description: string }; evaluation: { description: string; efficiency: string } };
+      console.log(`Goal: ${goal.description}. Evaluation: ${evaluation.description}. Efficiency priority: ${evaluation.efficiency}.`);
+      return;
+    }
     if (!verbose && (event.type === "research.proposal" || event.type === "player.initialized")) {
       const { policy, ...summary } = event.detail as { policy: { kind: string }; [key: string]: unknown };
       console.log(`[${event.type}] ${JSON.stringify({ ...summary, policyKind: policy.kind })}`);
@@ -60,10 +68,21 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
   try {
     if (!Number.isSafeInteger(pace) || pace < 0) throw new Error("--pace must be a nonnegative integer in milliseconds");
     if (process.argv.includes("--headless") && process.argv.includes("--watch")) throw new Error("Use either --headless or --watch");
+    const resume = learningArgument("resume");
+    const saved = resume ? JSON.parse(await readFile(join(resolve(resume), "experiment.json"), "utf8")) : undefined;
+    if (resume && ["policy", "fresh", "cold-start"].some(name => process.argv.some(arg => arg === `--${name}` || arg.startsWith(`--${name}=`)))) {
+      throw new Error("--resume restores its experiment; do not combine it with --policy, --fresh or --cold-start");
+    }
     const selection = learningArgument("policy");
-    const coldStart = process.argv.includes("--cold-start");
+    const coldStart = saved?.coldStart ?? process.argv.includes("--cold-start");
     if (selection !== undefined && (process.argv.includes("--fresh") || coldStart)) throw new Error("--policy cannot be combined with --fresh or --cold-start");
-    const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? 10000), report);
+    const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? saved?.maxCalls ?? 10000), report);
+    const setupEvents: LearningEvent[] = [];
+    models.report = async event => { setupEvents.push(event); await report(event); };
+    if (learningArgument("goal") !== undefined && !game.goalOptions && !game.requestedGoal) game.requestedGoal = learningArgument("goal");
+    if (saved?.evaluation && learningArgument("goal") === undefined && !game.requestedGoal && JSON.stringify(game.goal) !== JSON.stringify(saved.goal)) game.requestedGoal = saved.evaluation.request;
+    await resolveGameGoal(game, models, controller.signal, saved?.evaluation);
+    models.report = report;
     const policy = selection === undefined ? undefined : await loadPlayer(selection, game);
     if (view && "open" in view) {
       gameWindow = await view.open({ headless, signal: controller.signal, onClose: stop });
@@ -77,9 +96,9 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     console.log(`Researching ${game.id}: strategist → tactician → reflex/JEV; model-call budget ${models.maxCalls}. Ctrl+C stops the run.`);
     if (coldStart) console.log("Cold start: rules and goal only; prior learning is excluded and results stay in this experiment.");
     await runResearch({
-      game, models, policy, fresh: process.argv.includes("--fresh"), coldStart,
-      rounds: Number(learningArgument("rounds") ?? 5), games: Number(learningArgument("games") ?? 3),
-      maxSteps: Number(learningArgument("turns") ?? 5000), firstSeed: Number(learningArgument("seed") ?? randomInt(1, 2 ** 30)),
+      game, models, policy, resume, setupEvents, fresh: saved?.fresh ?? process.argv.includes("--fresh"), coldStart,
+      rounds: Number(learningArgument("rounds") ?? saved?.rounds ?? 5), games: Number(learningArgument("games") ?? saved?.games ?? 3),
+      maxSteps: Number(learningArgument("turns") ?? saved?.maxSteps ?? 5000), firstSeed: Number(learningArgument("seed") ?? saved?.firstSeed ?? randomInt(1, 2 ** 30)),
       signal: controller.signal, report,
     });
     if (!headless && !controller.signal.aborted) {

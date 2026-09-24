@@ -107,13 +107,13 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
       const base = this.context(before, {});
       const signals = await this.options.adapter.signals?.(base) ?? {};
       const context = this.context(before, signals);
-      await this.emit("observation", { revision: before.revision, events: before.events, signals });
+      await this.emit("observation", { ...before, signals });
       for (const role of this.scheduler.wake(context)) this.wake(role, context);
 
       if (this.activeSkill) return this.advanceSkill(before);
 
       const candidates = await this.options.candidates.generate(context);
-      await this.emit("candidates", candidates.map(({ id, description }) => ({ id, description })));
+      await this.emit("candidates", candidates);
       if (this.pendingAuthorityChange || this.stopped) {
         await this.emit("decision.interrupted");
         return { before };
@@ -188,7 +188,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
       this.latest = after;
       const verification = await this.options.verifier.verify({ before: current, after, candidate, executionError });
       this.lastVerification = verification;
-      await this.emit("verification", { candidateId: candidate.id, ...verification });
+      await this.emit("verification", { candidateId: candidate.id, before: current, after, ...verification });
       return { before, after, candidate, verification };
     });
   }
@@ -247,7 +247,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
     this.latest = after;
     const verification = await this.options.verifier.verify({ before: active.before, after, candidate: active.candidate, executionError });
     this.lastVerification = verification;
-    await this.emit("verification", { candidateId: active.candidate.id, ...verification });
+    await this.emit("verification", { candidateId: active.candidate.id, before: active.before, after, ...verification });
     return { before, after, candidate: active.candidate, verification };
   }
 

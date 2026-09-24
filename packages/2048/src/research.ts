@@ -14,6 +14,7 @@ if (definition.goal.id === "maximize-score" && learningArgument("target") !== un
 }
 await runResearchCli(definition, {
   async open({ headless, signal, onClose }) {
+    if (definition.evaluation?.objective === "score" && learningArgument("target") !== undefined) throw new Error('--target only applies to achievement goals');
     await browser.open(headless, signal, onClose);
     return browser;
   },
