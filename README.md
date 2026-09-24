@@ -10,7 +10,7 @@ export AI_GATEWAY_API_KEY='your-key'
 npm run game -- --game=2048
 ```
 
-2048 and Snake default to GPT-6 Astra for strategy/research and GPT-6 Sol for tactics. JEV is the intended reflex backend, but its integration is not implemented yet: the current CLI uses GPT-6 Luna as a temporary AI fallback for that tier. Set `GAMEBOT_STRATEGIST_MODEL`, `GAMEBOT_TACTICIAN_MODEL`, or `GAMEBOT_REFLEX_MODEL` to override a model; `GAMEBOT_MODEL` overrides all otherwise-unset roles. They start AI-first; `--policy=builtin` explicitly runs their older heuristics without model calls. See the [learning guide](docs/learning.md) for configuration and research.
+2048 and Snake default to GPT-6 Astra for strategy/research, GPT-6 Sol for tactics, and TypeSafe AI’s Jev for reflex decisions. Jev chooses among legal actions through the AI SDK evaluation API, using the same Gateway key. `GAMEBOT_STRATEGIST_MODEL` and `GAMEBOT_TACTICIAN_MODEL` override the higher tiers; `GAMEBOT_MODEL` supplies their common fallback. `GAMEBOT_REFLEX_MODEL` explicitly selects an evaluation model and defaults to `typesafe-ai/jev`. They start AI-first; `--policy=builtin` explicitly runs their older heuristics without model calls. See the [learning guide](docs/learning.md) for configuration and research.
 
 The launcher lists installed playable bridges with `npm run game -- --list`. Choose `--game=chess` for a terminal board or `--game=snake` for a local browser viewer. Game options follow the ID, for example `npm run game -- --game=2048 --seed=42` or `npm run game -- --game=chess --ai`. Each bridge declares its own launch defaults; the launcher builds core, the selected local bridge, and its local dependencies before starting it. `npm run build` remains the explicit full-workspace build.
 

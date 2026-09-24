@@ -38,7 +38,7 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
     game: LearningGame<State, Action>;
     models: PlayerModelRunner;
     policy?: PlayerPolicy;
-    /** Optional JEV/local backend at the existing fast-decision interface. */
+    /** Optional alternative backend; otherwise use the configured evaluation model (Jev by default). */
     reflex?: Reflex<State, Action>;
     report?: LearningReporter;
   }) {
@@ -104,7 +104,7 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
       if (choice === null && this.policy.kind === "code") throw new Error("Code policy returned null; only hybrid policies may delegate to AI");
     }
     if (choice === null) {
-      source = this.options.reflex ? "reflex-backend" : "ai";
+      source = this.options.reflex ? "reflex-backend" : "evaluation";
       if (this.options.reflex) {
         choice = await this.options.reflex.choose({ ...context, authority: { ...context.authority,
           directive: { id: "hierarchical-player", instruction: [context.authority.directive?.instruction,
@@ -112,11 +112,8 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
             parameters: { strategy: this.strategy, tactic: this.tactic } },
         } }, candidates, signal);
       } else {
-        const result = await this.options.models.ask("reflex", z.object({ candidateId: z.string(), reason: z.string().max(1000) }),
-          "You are the fast reflex/JEV layer. Choose exactly one offered candidate ID using the current strategy and tactic. Give a brief decision summary.",
+        choice = await this.options.models.choose(candidates,
           { ...input, rules: this.options.game.rules, responsibilities: this.policy.reflex }, signal);
-        choice = result.candidateId;
-        await this.options.report?.({ type: "reflex.summary", detail: result });
       }
     }
     if (!candidates.some(candidate => candidate.id === choice)) throw new Error(`Player selected unoffered candidate: ${choice}`);
