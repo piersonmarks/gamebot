@@ -35,15 +35,12 @@ const seed = Number(argument("seed") ?? 1);
 const pace = Number(argument("pace") ?? 200);
 const policyPath = argument("policy");
 const useAi = process.argv.includes("--ai");
-if (useAi && policyPath) throw new Error("Use either --ai or --policy, not both");
+if (useAi && policyPath !== undefined) throw new Error("Use either --ai or --policy, not both");
 const activePolicyPath = resolve(".gamebot", "games", "2048", "active-policy.json");
 let policy = defaultPolicy;
-if (!useAi) {
-  try {
-    policy = policySchema.parse(JSON.parse(await readFile(policyPath ? resolve(policyPath) : activePolicyPath, "utf8")));
-  } catch (error) {
-    if (policyPath || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+if (policyPath !== undefined) {
+  if (!policyPath) throw new Error("--policy requires a file path or latest");
+  policy = policySchema.parse(JSON.parse(await readFile(policyPath === "latest" ? activePolicyPath : resolve(policyPath), "utf8")));
 }
 if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
     !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed) || !Number.isSafeInteger(pace) || pace < 0) {
