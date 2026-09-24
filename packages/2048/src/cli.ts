@@ -32,16 +32,25 @@ const stepLimit = argument("turns") ?? argument("steps");
 const steps = stepLimit === undefined ? undefined : Number(stepLimit);
 const target = Number(argument("target") ?? 2048);
 const seed = Number(argument("seed") ?? 1);
+const pace = Number(argument("pace") ?? 200);
 const policyPath = argument("policy");
-const policy = policyPath ? policySchema.parse(JSON.parse(await readFile(resolve(policyPath), "utf8"))) : defaultPolicy;
+const useAi = process.argv.includes("--ai");
+if (useAi && policyPath) throw new Error("Use either --ai or --policy, not both");
+const activePolicyPath = resolve(".gamebot", "games", "2048", "active-policy.json");
+let policy = defaultPolicy;
+if (!useAi) {
+  try {
+    policy = policySchema.parse(JSON.parse(await readFile(policyPath ? resolve(policyPath) : activePolicyPath, "utf8")));
+  } catch (error) {
+    if (policyPath || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
 if ((steps !== undefined && (!Number.isSafeInteger(steps) || steps < 1)) ||
-    !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed)) {
-  throw new Error("--turns/--steps (if provided) and --target must be positive integers; --seed must be an integer");
+    !Number.isSafeInteger(target) || target < 2 || !Number.isSafeInteger(seed) || !Number.isSafeInteger(pace) || pace < 0) {
+  throw new Error("--turns/--steps (if provided) and --target must be positive integers; --seed must be an integer; --pace must be a nonnegative integer");
 }
 const headless = process.argv.includes("--headless");
 const verbose = process.argv.includes("--verbose");
-const useAi = process.argv.includes("--ai");
-if (useAi && policyPath) throw new Error("Use either --ai or --policy, not both");
 const observer = argument("observe") ?? "dom";
 if (observer !== "dom" && observer !== "vision") throw new Error("--observe must be dom or vision");
 const model = useAi ? process.env.GAMEBOT_REFLEX_MODEL ?? process.env.GAMEBOT_MODEL : undefined;
@@ -207,7 +216,7 @@ try {
         stopReason = "unverified";
         break;
       }
-      await delay(200);
+      if (pace) await delay(pace);
     }
   } catch (error) {
     if (!stop) throw error;

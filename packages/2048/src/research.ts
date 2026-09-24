@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, randomInt, createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateText, Output } from "ai";
@@ -14,10 +14,10 @@ function argument(name: string): string | undefined {
 }
 
 const rounds = Number(argument("rounds") ?? 5);
-const games = Number(argument("games") ?? 4);
-const maxTurns = Number(argument("turns") ?? 1000);
+const games = Number(argument("games") ?? 12);
+const maxTurns = Number(argument("turns") ?? 5000);
 const target = Number(argument("target") ?? 2048);
-const firstSeed = Number(argument("seed") ?? 1);
+const firstSeed = Number(argument("seed") ?? randomInt(1, 2 ** 31));
 if (![rounds, games, maxTurns, target].every(value => Number.isSafeInteger(value) && value > 0) ||
     !Number.isSafeInteger(firstSeed) || target < 2 || target > 2048 || !Number.isInteger(Math.log2(target))) {
   throw new Error("--rounds, --games and --turns must be positive integers; --target must be a power of two from 2 to 2048; --seed must be an integer");
@@ -25,6 +25,7 @@ if (![rounds, games, maxTurns, target].every(value => Number.isSafeInteger(value
 const model = process.env.GAMEBOT_RESEARCH_MODEL;
 const watch = process.argv.includes("--watch");
 const researchDir = resolve(".gamebot", "research", "2048", `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID()}`);
+const activePath = resolve(".gamebot", "games", "2048", "active-policy.json");
 await mkdir(researchDir, { recursive: true });
 const journal = join(researchDir, "runs.jsonl");
 await writeFile(join(researchDir, "experiment.json"), JSON.stringify({
@@ -39,6 +40,15 @@ process.once("SIGINT", () => { abort.abort(); console.log("\nStopping research a
 
 function policyId(policy: Policy2048): string {
   return createHash("sha256").update(JSON.stringify(policy)).digest("hex").slice(0, 12);
+}
+
+let baseline = defaultPolicy;
+let hadActivePolicy = false;
+try {
+  baseline = policySchema.parse(JSON.parse(await readFile(activePath, "utf8")));
+  hadActivePolicy = true;
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }
 
 function metrics(results: readonly SimResult[]) {
@@ -71,16 +81,18 @@ async function evaluate(policy: Policy2048, seeds: readonly number[], round: num
 }
 
 const deterministicProposals: Policy2048[] = [
-  { ...defaultPolicy, lookahead: 1 },
+  { ...defaultPolicy, monotone: 5 },
+  { ...defaultPolicy, monotone: 15 },
+  { ...defaultPolicy, monotone: 20 },
   { ...defaultPolicy, smooth: 2 },
-  { ...defaultPolicy, empty: 15, lookahead: 1 },
+  { ...defaultPolicy, empty: 15 },
   { ...defaultPolicy, corner: 40, smooth: 2 },
-  { ...defaultPolicy, merge: 4, empty: 15, lookahead: 1 },
-  { ...defaultPolicy, empty: 25, smooth: 3, lookahead: 1 },
+  { ...defaultPolicy, merge: 4, empty: 15 },
+  { ...defaultPolicy, empty: 25, smooth: 3 },
   { ...defaultPolicy, corner: 60, smooth: 4, lookahead: 1 },
 ];
-const tried = new Set([policyId(defaultPolicy)]);
-const triedPolicies: Policy2048[] = [defaultPolicy];
+const tried = new Set([policyId(baseline)]);
+const triedPolicies: Policy2048[] = [baseline];
 async function propose(round: number, champion: Policy2048, train: NonNullable<Awaited<ReturnType<typeof evaluate>>>) {
   if (!model) {
     const next = deterministicProposals.find(policy => !tried.has(policyId(policy)));
@@ -92,7 +104,7 @@ async function propose(round: number, champion: Policy2048, train: NonNullable<A
     abortSignal: abort.signal,
     maxOutputTokens: 512,
     output: Output.object({ schema: z.object({ policy: policySchema, reason: z.string().min(1).max(500) }) }),
-    system: "You are the 2048 improvement strategist. Propose one policy revision for an experiment. You cannot change game rules or the evaluator. A change is accepted only if it improves matched training and held-out games. Avoid repeating a tried policy.",
+    system: "You are the 2048 improvement strategist. Propose one policy revision for an experiment. You cannot change game rules or the evaluator. A change is accepted only if it improves matched training and fresh validation games. Avoid repeating a tried policy.",
     prompt: JSON.stringify({
       goal: `Reach a ${target} tile`, round, champion, trainingMetrics: train.metrics,
       weakestTrainingGame: { seed: weakest.seed, stopReason: weakest.stopReason, score: weakest.score, maxTile: weakest.maxTile, finalBoard: weakest.finalBoard, recentMoves: weakest.trajectory.slice(-12) },
@@ -102,6 +114,7 @@ async function propose(round: number, champion: Policy2048, train: NonNullable<A
         empty: "weight for empty cells after a slide",
         corner: "bonus when the largest tile is top-left",
         smooth: "penalty for adjacent tiles with different log2 values",
+        monotone: "penalty when row/column tile ranks rise then fall, making large tiles hard to combine",
         lookahead: "0 or 1; when 1, average the best next move across every possible 2/4 tile spawn",
       },
     }),
@@ -117,10 +130,13 @@ async function savePolicy(policy: Policy2048, name: string): Promise<string> {
 
 console.log(`2048 auto-research: ${rounds} rounds, ${games} training + ${games} fresh validation games per comparison, ${maxTurns} turns/game.`);
 console.log(`Research proposer: ${model ? `AI SDK model ${model}` : "built-in policy experiments"}. Journal: ${journal}`);
-let champion = defaultPolicy;
+console.log(`Starting policy: ${hadActivePolicy ? activePath : "built-in baseline"}; first seed ${firstSeed}.`);
+await appendFile(journal, JSON.stringify({ type: "experiment", baselinePolicyId: policyId(baseline), baseline, firstSeed, target, rounds, games, maxTurns }) + "\n");
+let champion = baseline;
 let championPath = await savePolicy(champion, "champion");
 console.log(`Baseline ${policyId(champion)}: ${JSON.stringify(champion)}`);
-let championTrain = await evaluate(champion, trainSeeds, 0, "train");
+const baselineTrain = await evaluate(champion, trainSeeds, 0, "train");
+let championTrain = baselineTrain;
 if (championTrain) {
   for (let round = 1; round <= rounds && !abort.signal.aborted; round++) {
     let proposal: Awaited<ReturnType<typeof propose>>;
@@ -162,9 +178,24 @@ if (championTrain) {
     }
   }
 }
-const baselineTest = abort.signal.aborted ? undefined : await evaluate(defaultPolicy, testSeeds, rounds + 1, "test");
-const championTest = abort.signal.aborted ? undefined : await evaluate(champion, testSeeds, rounds + 1, "test");
-console.log(JSON.stringify({ champion: policyId(champion), policyPath: championPath, train: championTrain?.metrics, finalTest: championTest?.metrics, baselineTest: baselineTest?.metrics, journal, interrupted: abort.signal.aborted }, null, 2));
+const baselineTest = abort.signal.aborted ? undefined : await evaluate(baseline, testSeeds, rounds + 1, "test");
+const championTest = abort.signal.aborted ? undefined : policyId(champion) === policyId(baseline)
+  ? baselineTest : await evaluate(champion, testSeeds, rounds + 1, "test");
+const activated = !!baselineTest && !!championTest && compare(championTest.metrics, baselineTest.metrics) > 0;
+if (activated) {
+  await mkdir(dirname(activePath), { recursive: true });
+  const temporary = `${activePath}.${randomUUID()}.tmp`;
+  await writeFile(temporary, JSON.stringify(champion, null, 2) + "\n");
+  await rename(temporary, activePath);
+  console.log(`Activated policy ${policyId(champion)} for future 2048 games: ${activePath}`);
+  await appendFile(journal, JSON.stringify({ type: "activation", policyId: policyId(champion), finalTest: championTest.metrics, baselineTest: baselineTest.metrics }) + "\n");
+} else if (!abort.signal.aborted) {
+  champion = baseline;
+  championTrain = baselineTrain;
+  championPath = await savePolicy(champion, "champion");
+  console.log("Final audit did not improve the active policy; keeping the previous policy.");
+}
+console.log(JSON.stringify({ champion: policyId(champion), policyPath: championPath, activePolicyPath: activated || hadActivePolicy ? activePath : undefined, activated, train: championTrain?.metrics, finalTest: championTest?.metrics, baselineTest: baselineTest?.metrics, journal, interrupted: abort.signal.aborted }, null, 2));
 if (watch && !abort.signal.aborted) {
   const cli = resolve(dirname(fileURLToPath(import.meta.url)), "cli.js");
   console.log("Opening a visible browser game with the selected policy...");

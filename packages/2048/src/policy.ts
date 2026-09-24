@@ -7,10 +7,11 @@ export const policySchema = z.object({
   empty: z.number().min(0).max(50),
   corner: z.number().min(0).max(100),
   smooth: z.number().min(0).max(20),
+  monotone: z.number().min(0).max(50).default(0),
   lookahead: z.union([z.literal(0), z.literal(1)]),
 }).strict();
 export type Policy2048 = z.infer<typeof policySchema>;
-export const defaultPolicy: Policy2048 = { merge: 2, empty: 10, corner: 20, smooth: 0, lookahead: 0 };
+export const defaultPolicy: Policy2048 = { merge: 2, empty: 10, corner: 20, smooth: 0, monotone: 10, lookahead: 1 };
 export const directions = ["up", "right", "down", "left"] as const;
 
 export function candidates2048(context: DecisionContext<Game2048State>): Candidate<Direction>[] {
@@ -28,13 +29,25 @@ function boardScore(board: number[][], mergePoints: number, policy: Policy2048) 
   const empty = cells.filter(value => value === 0).length;
   const corner = board[0]![0] === Math.max(...cells) ? 1 : 0;
   let roughness = 0;
+  let monotonicity = 0;
   for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
     const value = board[y]![x]!;
     if (!value) continue;
     if (x < 3 && board[y]![x + 1]) roughness += Math.abs(Math.log2(value) - Math.log2(board[y]![x + 1]!));
     if (y < 3 && board[y + 1]![x]) roughness += Math.abs(Math.log2(value) - Math.log2(board[y + 1]![x]!));
   }
-  return { score: mergePoints * policy.merge + empty * policy.empty + corner * policy.corner - roughness * policy.smooth, empty, corner, roughness };
+  for (let lane = 0; lane < 4; lane++) for (const vertical of [false, true]) {
+    let rising = 0, falling = 0;
+    for (let index = 1; index < 4; index++) {
+      const before = vertical ? board[index - 1]![lane]! : board[lane]![index - 1]!;
+      const after = vertical ? board[index]![lane]! : board[lane]![index]!;
+      const delta = Math.log2(after || 1) - Math.log2(before || 1);
+      if (delta > 0) rising += delta;
+      else falling -= delta;
+    }
+    monotonicity += Math.min(rising, falling);
+  }
+  return { score: mergePoints * policy.merge + empty * policy.empty + corner * policy.corner - roughness * policy.smooth - monotonicity * policy.monotone, empty, corner, roughness, monotonicity };
 }
 
 function bestNextScore(board: number[][], policy: Policy2048): number {
