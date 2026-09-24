@@ -43,6 +43,7 @@ export async function playEpisode<State, Action>(game: LearningGame<State, Actio
   let error: string | undefined;
   const trajectory: unknown[] = [];
   try {
+    await reportPlayer({ type: "episode.started", detail: { state, strategy: policy.strategy } });
     while (steps < options.maxSteps && !game.outcome(state).done) {
       options.signal.throwIfAborted();
       judgments = {};
@@ -150,7 +151,11 @@ export async function runResearch<State, Action>(options: {
     try { baseline = await loadPlayer("latest", game); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
-  baseline ??= await initializePlayer(game, await (await game.create(options.firstSeed)).observe(), models, signal, report);
+  if (!baseline) {
+    const observation = await (await game.create(options.firstSeed)).observe();
+    await report({ type: "research.setup", detail: { state: observation.state } });
+    baseline = await initializePlayer(game, observation, models, signal, report);
+  }
   await save(baseline);
   await report({ type: "research.started", detail: { ...experiment, baseline: policyId(baseline), journal } });
   const historyPath = options.coldStart ? join(directory, "research-history.jsonl")

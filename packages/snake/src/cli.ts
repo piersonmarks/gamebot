@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FileTraceSink, SessionRuntime, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv,
-  loadPlayer, learningArgument, type LearningEvent } from "@gamebot/core";
+  loadPlayer, learningArgument, openGameWindow, type LearningEvent } from "@gamebot/core";
 import { SnakeGame, foodDistance, wouldCollide, type SnakeState, type Direction } from "./game.js";
 import { learningSnake } from "./learning.js";
 import { startViewer } from "./viewer.js";
@@ -24,7 +24,7 @@ const policy = selection === undefined || builtin ? undefined : await loadPlayer
 const modelConfig = builtin ? undefined : playerModelsFromEnv();
 const watch = process.argv.includes("--watch");
 const verbose = process.argv.includes("--verbose");
-const viewer = process.argv.includes("--window") ? await startViewer() : undefined;
+const viewer = process.argv.includes("--headless") ? undefined : await startViewer();
 const game = new SnakeGame(seed, Number(learningArgument("target") ?? 5));
 const trace = new FileTraceSink(resolve(".gamebot", "traces", `snake-${seed}-${randomUUID()}.jsonl`));
 let session: SessionRuntime<SnakeState, Direction>;
@@ -52,7 +52,10 @@ const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
 const stop = () => { interrupted = true; session.stop(); resolveStop(); };
 process.once("SIGINT", stop);
 try {
-  if (viewer) console.log(`Watch Gamebot at ${viewer.url}. Ctrl+C stops play and closes the viewer.`);
+  if (viewer) {
+    console.log(`Watch Gamebot at ${viewer.url}. Ctrl+C stops play and closes the viewer.`);
+    openGameWindow(viewer.url);
+  }
   console.log(`Player: ${builtin ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${policy?.kind ?? "initial AI"})`}.`);
   let state: SnakeState = (await game.observe()).state;
   viewer?.publish(state);
