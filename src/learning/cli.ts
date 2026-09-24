@@ -51,6 +51,9 @@ export interface ResearchGameWindow {
 }
 
 export async function runResearchCli<State, Action>(game: LearningGame<State, Action>, view?: ResearchViewerOptions | ResearchGameWindow): Promise<void> {
+  if (process.argv.some(arg => /^--learn-(every|ms)(=|$)/.test(arg))) {
+    throw new Error("Review schedules were removed; the supervising model decides when to request learning");
+  }
   const controller = new AbortController();
   let resolveStop!: () => void;
   const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
@@ -111,8 +114,6 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
       await runContinualLearning({ game, models, policy, resume, setupEvents, signal: controller.signal, report,
         coldStart, fresh: saved?.fresh ?? process.argv.includes("--fresh"),
         seed: Number(learningArgument("seed") ?? saved?.seed ?? randomInt(1, 2 ** 30)),
-        learnEvery: Number(learningArgument("learn-every") ?? saved?.learnEvery ?? 64),
-        learnMs: Number(learningArgument("learn-ms") ?? saved?.learnMs ?? 300000),
         maxSteps: learningArgument("turns") === undefined ? undefined : Number(learningArgument("turns")),
         maxReviews: learningArgument("rounds") === undefined ? undefined : Number(learningArgument("rounds")),
         maxGames: learningArgument("games") === undefined ? undefined : Number(learningArgument("games")),

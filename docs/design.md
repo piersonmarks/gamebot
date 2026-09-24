@@ -20,7 +20,7 @@ Gamebot
 │   ├── Deterministic skills may continue without reflex calls
 │   ├── Reflex initially selects only offered candidates
 │   ├── Tactician and strategist are optional and usually dormant
-│   ├── Scheduler uses multiple signals, cooldowns, and explicit budgets
+│   ├── Sol supervises reflex outcomes and explicitly requests strategic help or learning
 │   └── Tool calls gather evidence; proposals use the same activation path
 ├── Skills
 │   ├── Agent Skills SKILL.md is the discovery/instruction format
@@ -42,7 +42,7 @@ Gamebot
     └── Diagnose from traces; establish performance in actual game runs
 ```
 
-The event-driven coordinator is the single writer of authority. Adapters translate game mechanics into observations, feasible actions, verifier outcomes, and scheduler signals. Fast and slow model implementations can change without changing the adapter's game rules. Reasoning results can be discarded when the goal, directive, or their relevant assumptions have changed. Action validation is repeated against a fresh observation before dispatch.
+The event-driven coordinator is the single writer of authority. Adapters translate game mechanics into observations, feasible actions, verifier outcomes, and observation signals. Fast and slow model implementations can change without changing the adapter's game rules. Reasoning results can be discarded when the goal, directive, or their relevant assumptions have changed. Action validation is repeated against a fresh observation before dispatch.
 
 Operational details remain deliberately small in v0: one process, one session per runtime, local file memory, and registered deterministic skill executors. The planned restart behavior restores intent and observes the game again; persistence of live authority is not wired into the current session runtime. It will not replay queued commands or resume a skill's instruction pointer. The coordinator now advances one skill action per step, reobserves before dispatch, and cancels active skills on interruption or run end.
 
@@ -59,6 +59,6 @@ Each game bridge owns an initially empty `tools/` area for reviewed game-specifi
 
 ## AI-first research extension
 
-The 2048 and Snake runners now use a shared three-tier player. The strategist establishes the initial approach and delegation before play; the tactician maintains a separate immediate objective; the reflex/JEV role chooses legal candidates through AI, generated code, or explicit hybrid delegation. The strategist selects review intervals, and game signals can trigger earlier reviews. These turn-based runners await reviews; the existing asynchronous reasoner interface remains available for other integrations.
+The 2048 and Snake runners now use a shared three-tier player. The strategist establishes the initial approach and delegation before play; the tactician maintains a separate immediate objective; the reflex/JEV role chooses legal candidates through AI, generated code, or explicit hybrid delegation. Sol supervises every decision and decides whether to continue, involve Astra, or request a learning revision. Jev only answers judgments. Game signals and terminal outcomes provide evidence; the harness has no automatic review intervals or timers. These runners await model-requested reviews; the existing asynchronous reasoner interface remains available for other integrations.
 
 Research evaluates whole player artifacts, including prompts and executable programs. The strongest configured model diagnoses sampled gameplay and proposes alternatives, with prior experiment findings retained across runs. Rules, goals, legality, execution limits and success evaluation belong to the harness and game package. Code runs in QuickJS rather than the host process. Fresh training/validation comparisons and a final audit gate publication. Ordinary play is AI-first and requires explicit `--policy` selection to load saved research. See [the learning guide](learning.md) for the implemented interface and limits.

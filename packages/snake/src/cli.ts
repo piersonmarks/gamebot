@@ -8,6 +8,9 @@ import { SnakeGame, foodDistance, wouldCollide, type SnakeState, type Direction 
 import { learningSnake } from "./learning.js";
 import { startViewer } from "./viewer.js";
 
+if (process.argv.some(arg => /^--learn-(every|ms)(=|$)/.test(arg))) {
+  throw new Error("Review schedules were removed; the supervising model decides when to request learning");
+}
 const seed = Number(learningArgument("seed") ?? 1);
 const turns = Number(learningArgument("turns") ?? learningArgument("steps") ?? 5000);
 const pace = Number(learningArgument("pace") ?? 120);
@@ -55,8 +58,7 @@ process.once("SIGINT", stop);
 try {
   session = builtin || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
     : await ContinualLearningSession.open({ game: definition, adapter: game, models: models!, policy, seed,
-      signal: controller.signal, trace, report, coldStart: process.argv.includes("--cold-start"),
-      learnEvery: Number(learningArgument("learn-every") ?? 64), learnMs: Number(learningArgument("learn-ms") ?? 300000) });
+      signal: controller.signal, trace, report, coldStart: process.argv.includes("--cold-start") });
   if (viewer) {
     console.log(`Watch Gamebot at ${viewer.url}. Ctrl+C stops play and closes the viewer.`);
     openGameWindow(viewer.url);
@@ -73,7 +75,6 @@ try {
     if (watch) console.log(`Tick ${state.tick}; food ${state.foodEaten}/${game.targetFood}\n${state.board}\n`);
     if (pace && (viewer || watch)) await delay(pace);
   }
-  if (!interrupted && session instanceof ContinualLearningSession) await session.review();
   await session.finish();
   console.log(JSON.stringify({ ...definition.outcome(state), steps, status: interrupted ? "interrupted" : game.status(),
     tracePath: trace.path, modelUsage: models?.usage }, null, 2));

@@ -1,4 +1,3 @@
-import { RuleScheduler } from "./scheduler.js";
 import type { SkillExecution } from "../skills/executor.js";
 import type {
   Authority, Candidate, CandidateGenerator, DecisionContext, Directive, DirectiveProposal,
@@ -43,11 +42,11 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   private execution?: AbortController;
   private activeSkill?: { run: SkillExecution<Action, unknown>; candidate: Candidate<Action>; before: Observation<State>; controller: AbortController };
   private pendingAuthorityChange = 0;
-  private readonly scheduler: Scheduler<State>;
+  private readonly scheduler?: Scheduler<State>;
 
   constructor(private readonly options: SessionOptions<State, Action, Assumptions>, goal: Goal) {
     this.authority = { goal, goalRevision: 1, directiveRevision: 0 };
-    this.scheduler = options.scheduler ?? new RuleScheduler<State>();
+    this.scheduler = options.scheduler;
   }
 
   getAuthority(): Readonly<Authority> {
@@ -108,7 +107,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
       const signals = await this.options.adapter.signals?.(base) ?? {};
       const context = this.context(before, signals);
       await this.emit("observation", { ...before, signals });
-      for (const role of this.scheduler.wake(context)) this.wake(role, context);
+      for (const role of this.scheduler?.wake(context) ?? []) this.wake(role, context);
 
       if (this.activeSkill) return this.advanceSkill(before);
 

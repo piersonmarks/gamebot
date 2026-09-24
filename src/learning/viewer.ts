@@ -12,7 +12,7 @@ type ViewerDetail = {
   event?: ViewerDetail; state?: unknown; after?: unknown; finalState?: unknown;
   strategy?: string; instruction?: string; policy?: { strategy: string };
   role?: string; set?: string; seed?: number; policyId?: string; step?: number; steps?: number;
-  reason?: string; progress?: number; nextReviewIn?: number; retained?: boolean; action?: unknown; error?: string; stopReason?: string; round?: number; accepted?: boolean; message?: string;
+  reason?: string; progress?: number; retained?: boolean; action?: unknown; error?: string; stopReason?: string; round?: number; accepted?: boolean; message?: string;
 };
 
 /** Open the existing default browser; never install or download a browser. */
@@ -120,7 +120,7 @@ stream.onmessage=({data})=>{
         case "learning.proposal": view.phase = "Checking a proposed revision"; break;
         case "learning.policy-activated": view.phase = "Trying a revised player in this world"; break;
         case "learning.trial-reviewed": view.phase = detail.retained ? "Retaining the live trial" : "Restoring the previous player"; break;
-        case "learning.reviewed": view.phase = "Playing"; view.meta = `Next learning review in up to ${detail.nextReviewIn} decisions`; break;
+        case "learning.reviewed": view.phase = "Playing"; view.meta = "The supervising model decides when to review again"; break;
         case "learning.saved": view.phase = "Learning saved"; break;
         case "research.proposal": view.phase = `Testing revision ${detail.round}`; break;
         case "research.revision": view.phase = detail.accepted ? "Improved policy accepted" : "Keeping the previous policy"; break;

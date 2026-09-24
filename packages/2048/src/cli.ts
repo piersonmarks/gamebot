@@ -20,6 +20,9 @@ if (argument("steps") !== undefined && argument("turns") !== undefined) {
 const stepLimit = argument("turns") ?? argument("steps");
 const steps = stepLimit === undefined ? undefined : Number(stepLimit);
 const target = Number(argument("target") ?? 2048);
+if (process.argv.some(arg => /^--learn-(every|ms)(=|$)/.test(arg))) {
+  throw new Error("Review schedules were removed; the supervising model decides when to request learning");
+}
 const seed = Number(argument("seed") ?? 1);
 const pace = Number(argument("pace") ?? 200);
 const policyPath = argument("policy");
@@ -158,8 +161,7 @@ try {
   session = policy || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
     : await ContinualLearningSession.open({ game: { ...definition, verifier: sessionOptions.verifier }, adapter: game,
       models, policy: learnedPolicy, signal: visionAbort.signal, seed, trace: liveTrace, report: reportLearning,
-      coldStart: process.argv.includes("--cold-start"),
-      learnEvery: Number(argument("learn-every") ?? 64), learnMs: Number(argument("learn-ms") ?? 300000) });
+      coldStart: process.argv.includes("--cold-start") });
 
   console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
   console.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
@@ -169,7 +171,7 @@ try {
   let stopReason = "no-action";
   try {
     finalState = (await game.observe()).state;
-    for (let step = 0; (steps === undefined || step < steps) && !stop; step++) {
+    for (let step = 0; (steps === undefined || step < steps) && !stop; step = moves) {
       if (definition.outcome(finalState).done) break;
       if (verbose) console.log(`[verbose] turn ${step + 1} board: ${JSON.stringify(finalState.board)}`);
       playerSequence = step + 1;
@@ -185,7 +187,6 @@ try {
       }
       if (pace) await delay(pace);
     }
-    if (!stop && session instanceof ContinualLearningSession) await session.review();
   } catch (error) {
     if (!stop) throw error;
   } finally { await session.finish(); }

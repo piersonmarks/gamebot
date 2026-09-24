@@ -27,7 +27,7 @@ Astra and Sol generate structured plans; [Jev](https://vercel.com/ai-gateway/mod
 ```sh
 npm run game -- --game=2048 --verbose
 npm run autoplay -- --game=2048 --cold-start --verbose
-npm run autoplay -- --game=snake --fresh --learn-every=64 --turns=1000
+npm run autoplay -- --game=snake --fresh --turns=1000
 npm run game -- --game=2048 --policy=/absolute/path/player.json
 npm run game -- --game=2048 --policy=/absolute/path/player.json --no-learn
 ```
@@ -42,27 +42,23 @@ Autoplay runs until interrupted or a budget is reached. `--turns` caps total dec
 
 The cycle is: collect observations and outcomes → review evidence → propose a revision or retain the current player → check executable code → try the revision during play → collect more evidence.
 
-The same cycle runs when:
+Sol, the tactician, supervises every decision using the current observation, prior Jev judgments, their verified outcomes and recent learning evidence. It returns an explicit choice: continue (`none`), ask Astra for strategic help (`strategist`), or request a policy/program learning review (`learning`). Astra can also request learning when Sol asks it for strategic help. Jev only answers typed judgments; it does not decide when to escalate.
 
-- A bridge reports a milestone or setback.
-- Native game signals report a blocked goal, failed tactic or novel situation.
-- The review interval or time deadline is reached, including stretches with no measured progress.
-- A decision fails or cannot be verified.
-- A game is won or lost, or an explicit run limit is reached.
+Milestones, setbacks, native signals, failures, elapsed time and terminal outcomes are evidence for Sol. None automatically invokes Astra or the researcher. Terminal and unavailable-action observations go to Sol without asking Jev for an impossible move. There are no review timers, turn-count thresholds, or fallback schedules. Removed `--learn-every` and `--learn-ms` flags produce an error; legacy policy interval fields remain readable but are ignored, and new policies use null.
 
-There is no separate post-game learner. Terminal events simply close a learning window. Each window records its starting and ending state, goal outcomes, progress, model usage, sampled transitions and any failed-decision evidence. The full journal retains every transition. No whole-game win is required before a model can discover and test a programmatic approach.
+There is no separate post-game learner. A model-requested review closes the current evidence window. Each window records starting and ending states, goal outcomes, progress, model usage, sampled transitions and failed-decision evidence. Unreviewed experience survives game boundaries and interruption. The full journal retains every transition. No whole-game win is required before a model can request a programmatic experiment.
 
-`--learn-every=64` sets the initial review interval; Astra can change the next interval from 1–2048 decisions as evidence warrants. `--learn-ms=300000` sets a wall-time deadline. Native events can trigger earlier reviews. Deadlines are checked between actions, not by an independent timer during a blocked game operation. Reviews currently await models between actions; they do not pause an external world's clock. The runtime reobserves and validates actions before dispatch.
+Supervision currently adds a Sol call to every decision, including generated-code decisions. Reviews await models between actions and do not pause an external world's clock. The runtime reobserves and validates actions before dispatch. User budgets and Ctrl+C stop work and save evidence; they never initiate a review.
 
-The strategist/researcher can revise prompts, Jev questions and composition code, review scheduling, or a generated action-selection program. It can also return no revision and gather more evidence. Rules, goal evaluation and native action legality remain outside the editable player.
+The strategist/researcher can revise prompts, Jev questions and composition code, supervision instructions, or a generated action-selection program. It can also return no revision and gather more evidence. Rules, goal evaluation and native action legality remain outside the editable player.
 
 ## The three tiers
 
 Astra establishes the initial strategy and delegates responsibilities. The tactician turns that strategy into lasting objectives; Jev answers typed judgments to choose an offered action. Ordinary planning reviews adapt the current strategy and tactics. Learning reviews can also revise the saved player implementation.
 
-Each planning review chooses its next check-in. Tactical `instruction` is a lasting objective; `immediateAction` expires after that decision. Autonomous code runs before supervision and can request a tactician or strategist review when it can use the answer. It does not pay for periodic planning calls it ignores. The independent learning cycle still observes that program and reviews its measured results.
+The tactician controls escalation based on evidence. Its tactical `instruction` is a lasting objective; `immediateAction` expires after that decision. Astra is called initially to establish the player, then only when requested by a supervising model during live play. Frozen replay/benchmark players still use tactical supervision, but cannot request live policy revisions.
 
-Player kinds are `ai`, `code`, and `hybrid`. Code defines `choose(input)` and returns an offered ID; hybrid code can return null to delegate to Jev. It can return `{ candidateId: null, review: "strategist" }` or request `"tactician"`. The runtime reviews and invokes the program once more with updated context and `reviewCompleted: true`. Repeated review requests within the same decision are rejected. Inputs include state, candidates, goal/directive, strategy, tactic, immediate advice, recent decisions and game signals.
+Player kinds are `ai`, `code`, and `hybrid`. Code defines `choose(input)` and returns an offered ID; hybrid code can return null to delegate to Jev. A program may propose `{ candidateId: null, review: "strategist" }` or request `"tactician"`. Sol sees the proposal and decides what help is justified; program requests do not bypass supervision. The program runs again with updated context and `reviewCompleted: true`, and must then supply its decision. Inputs include state, candidates, goal/directive, strategy, tactic, immediate advice, recent decisions, verification and game signals.
 
 Programs run in fresh QuickJS interpreters with 100 ms and 32 MiB limits. They have no imports, filesystem, network, clock or random APIs. Generated code and Jev programs receive preflight contract checks on recorded states before activation. These check bounded execution and legal outputs, not whether an algorithm is optimal. The active program only changes between actions.
 
@@ -93,7 +89,7 @@ The top-level `.gamebot/research/<game>/<run>/` directory contains:
 - `checkpoint.json`: active policy, fallback/trial, learning history, partial window, pending proposal and cumulative usage.
 - Policy JSON artifacts for explicit replay, plus `result.json` when an autoplay invocation reaches its limit.
 
-Ctrl+C saves the partial window without starting another model call. Resume reviews that evidence and reuses any saved proposal. It preserves the model budget; raise `--max-calls` explicitly when necessary. Autoplay resumes its saved total turn/review/game limits; increase those limits to continue beyond them. Keep the same game version, goal and models. Supply bridge options such as `--game-dir` and a nondefault `--target` again.
+Ctrl+C saves the partial window without starting another model call. Resume presents unreviewed evidence to Sol; only a review already requested by a model is resumed automatically, reusing any saved proposal. Legacy scheduled review requests are retained as evidence rather than executed. It preserves the model budget; raise `--max-calls` explicitly when necessary. Autoplay resumes its saved total turn/review/game limits; increase those limits to continue beyond them. Keep the same game version, goal and models. Supply bridge options such as `--game-dir` and a nondefault `--target` again.
 
 An episodic bridge starts a fresh board on process resume. A persistent bridge must provide `reconnect()` to attach to its existing world; otherwise resume fails rather than resetting it. Changes that occurred offline are logged separately and excluded from the previous policy's progress window. This is a learning checkpoint, not a universal world save/restore implementation.
 
@@ -139,7 +135,7 @@ For longer-horizon integrations:
 - Use native adapter signals for blocked goals, failed tactics and novel situations.
 - For custom text goals, expose fixed `goalOptions` and resolve the request before starting the session.
 
-`ContinualLearningSession.open(...)` accepts the game, model runner, cancellation signal and an optional already-connected adapter. `step()` performs an action and any due learning review. `review()` closes a partial window at an intentional run limit; `finish()` cancels work and saves without requesting more AI. `restart()` is allowed only after a terminal episodic game. `runContinualLearning` drives this session for autoplay; `runResearch` remains the optional matched benchmark runner.
+`ContinualLearningSession.open(...)` accepts the game, model runner, cancellation signal and an optional already-connected adapter. `step()` supervises the observation, then performs an action or fulfills a model-requested learning review. `finish()` cancels work and saves without requesting more AI. `restart()` is allowed only after a terminal episodic game. `runContinualLearning` drives this session for autoplay; `runResearch` remains the optional matched benchmark runner.
 
 A research entry point uses `runResearchCli(game, window)`. A bridge with its own game window supplies `open({ headless, signal, onClose })` returning a closeable handle. 2048 uses the real browser page; Snake supplies its native state renderer to the shared viewer. Connecting and rendering a game remain bridge responsibilities. The OpenRCT2 and RuneBench transport bridges still need their own complete learning-game definitions and goal feedback before they can use this loop for autonomous persistent-world play.
 

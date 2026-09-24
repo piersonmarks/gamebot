@@ -36,8 +36,9 @@ const policyFields = {
   strategy: z.string().min(1).max(12000),
   tactics: z.string().min(1).max(6000),
   reflex: z.string().min(1).max(6000),
-  tacticianEvery: z.number().int().min(1).max(256),
-  strategistEvery: z.number().int().min(1).max(2048),
+  // Legacy artifact fields are accepted but never schedule model calls. New policies use null.
+  tacticianEvery: z.number().int().min(1).max(256).nullable(),
+  strategistEvery: z.number().int().min(1).max(2048).nullable(),
   // Required, nullable fields work with providers using strict structured output.
   code: z.string().max(60000).nullable(),
 };
@@ -103,8 +104,9 @@ export async function loadPlayer<State, Action>(selection: string, game: Learnin
 export const codeContract = `Code must define a synchronous function choose(input) returning an offered candidate ID.
 For hybrid policies only, return null to delegate the current decision to the AI reflex.
 Alternatively return {candidateId: an offered ID or null, review: "tactician" | "strategist" | null}.
-Code runs before supervision. Periodic reviews apply only to AI decisions; autonomous code pays no model cost.
-Request a review conditionally using current observations when it can affect your decision. After a requested review,
+The tactician supervises each observation and program proposal, and decides whether higher reasoning is needed.
+There are no scheduled reviews. Legacy tacticianEvery and strategistEvery fields are ignored; set them to null.
+Request a review conditionally using current observations when it can affect your decision. After supervision,
 choose is called once more with updated strategy/tactic and reviewCompleted=true; it must not request another review.
 The tactic is a lasting objective; immediateAction is advice valid only for this decision. Code cannot rewrite its own program during play.
 input contains state (the observed game state), candidates (id, description, action), goal, directive, strategy, tactic, and recent decisions.
