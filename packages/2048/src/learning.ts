@@ -1,9 +1,8 @@
 import type { LearningGame } from "@gamebot/core";
 import { previewMove, type Direction, type Game2048State } from "./index.js";
 import { directions } from "./policy.js";
-import { Sim2048 } from "./sim.js";
 
-export function learning2048(target = 2048): LearningGame<Game2048State, Direction> {
+export function learning2048(create: LearningGame<Game2048State, Direction>["create"], target = 2048): LearningGame<Game2048State, Direction> {
   if (!Number.isInteger(target) || target < 2 || target > 2048 || !Number.isInteger(Math.log2(target))) {
     throw new Error("--target must be a power of two from 2 to 2048");
   }
@@ -16,7 +15,7 @@ Each tile merges at most once per move. The score increases by the value of each
 After a move that changes the board, one empty cell chosen uniformly gets a 2 (90%) or 4 (10%).
 Only board-changing moves are offered. The initial board has two spawned tiles. Lose when no moves remain.
 Future random spawns are hidden. Reach the user's target tile to win.`,
-    create: seed => new Sim2048(seed),
+    create,
     candidates: { generate: ({ observation }) => directions.filter(direction => previewMove(observation.state.board, direction).changed)
       .map(direction => ({ id: direction, action: direction, description: `Slide ${direction}` })) },
     verifier: { verify: ({ before, after, executionError }) => executionError || JSON.stringify(before.state.board) === JSON.stringify(after.state.board)

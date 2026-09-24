@@ -120,3 +120,4 @@ export class Game2048 implements GameAdapter<Game2048State, Direction> {
 }
 
 export { learning2048 } from "./learning.js";
+export { Browser2048Session } from "./browser.js";

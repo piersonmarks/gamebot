@@ -26,19 +26,29 @@ export function learningConsole(verbose = false): LearningReporter {
   };
 }
 
-export async function runResearchCli<State, Action>(game: LearningGame<State, Action>, view?: ResearchViewerOptions): Promise<void> {
+/** Bridges with their own game window open it even in headless mode. */
+export interface ResearchGameWindow {
+  open(options: { headless: boolean; signal: AbortSignal; onClose: () => void }): Promise<{ close(): Promise<void> }>;
+}
+
+export async function runResearchCli<State, Action>(game: LearningGame<State, Action>, view?: ResearchViewerOptions | ResearchGameWindow): Promise<void> {
   const controller = new AbortController();
   let resolveStop!: () => void;
   const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
-  const stop = () => { console.log("Stopping research..."); controller.abort(); resolveStop(); };
+  const stop = () => {
+    if (controller.signal.aborted) return;
+    console.log("Stopping research..."); controller.abort(); resolveStop();
+  };
   process.once("SIGINT", stop);
   let viewer: Awaited<ReturnType<typeof startResearchViewer>> | undefined;
+  let gameWindow: Awaited<ReturnType<ResearchGameWindow["open"]>> | undefined;
+  const headless = process.argv.includes("--headless");
   const consoleReport = learningConsole(process.argv.includes("--verbose"));
   const pace = Number(learningArgument("pace") ?? 200);
   const report: LearningReporter = async event => {
     await consoleReport(event);
     viewer?.report(event);
-    if (viewer && pace && (event.type === "episode.step" || event.type === "episode.completed")) {
+    if (!headless && pace && (event.type === "episode.step" || event.type === "episode.completed")) {
       await delay(pace, undefined, { signal: controller.signal });
     }
   };
@@ -50,7 +60,10 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     if (selection !== undefined && (process.argv.includes("--fresh") || coldStart)) throw new Error("--policy cannot be combined with --fresh or --cold-start");
     const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? 10000), report);
     const policy = selection === undefined ? undefined : await loadPlayer(selection, game);
-    if (!process.argv.includes("--headless")) {
+    if (view && "open" in view) {
+      gameWindow = await view.open({ headless, signal: controller.signal, onClose: stop });
+      console.log(`GameBot controls the real ${game.id} game${headless ? " in a headless browser" : " window"}. Ctrl+C stops research.`);
+    } else if (!headless) {
       if (!view) throw new Error(`Game ${game.id} has no research viewer. Use --headless to run without a window.`);
       viewer = await startResearchViewer(view);
       console.log(`Watch GameBot live at ${viewer.url}. Ctrl+C stops research.`);
@@ -64,7 +77,7 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
       maxSteps: Number(learningArgument("turns") ?? 5000), firstSeed: Number(learningArgument("seed") ?? randomInt(1, 2 ** 30)),
       signal: controller.signal, report,
     });
-    if (viewer && !controller.signal.aborted) {
+    if (!headless && !controller.signal.aborted) {
       console.log("Research complete. The final board stays visible until Ctrl+C.");
       await stopped;
     }
@@ -75,5 +88,6 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
   } finally {
     process.removeListener("SIGINT", stop);
     await viewer?.close();
+    await gameWindow?.close();
   }
 }
