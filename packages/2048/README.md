@@ -29,6 +29,8 @@ To run the outer research loop with one command:
 npm run autoplay -- --game=2048
 ```
 
+For a separate rules-and-goal-only evaluation, use `npm run autoplay -- --game=2048 --cold-start --seed=1 --verbose`. It excludes prior GameBot knowledge and keeps all results inside the experiment without replacing your saved player. The final report separates the initial player's results, first win, and final evaluation on new seeds. See [cold-start evaluation](../../docs/learning.md#cold-start-evaluation).
+
 Research starts with rules and an AI policy, records simulated gameplay, and asks the strategist to diagnose outcomes and propose a revised player. Revisions can change prompts, review intervals, or introduce executable search/scoring code and hybrid AI delegation. The same player implementation runs against the simulator and browser. Game rules and evaluation stay fixed outside the editable policy.
 
 Promising revisions must improve matched training and fresh validation games, then pass a final comparison on previously unseen seeds. Research resumes the latest evaluated player; `--fresh` starts over without prior policies or findings. Use `--rounds=5 --games=3 --turns=5000 --seed=1 --max-calls=10000` to configure the experiment. `--watch` replays the selected artifact in a visible browser. Ctrl+C interrupts the loop. More evaluation games provide stronger evidence; the loop does not guarantee a win or optimality.

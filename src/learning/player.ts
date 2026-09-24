@@ -15,7 +15,7 @@ export async function initializePlayer<State, Action>(
   }), `Understand this game and establish the initial three-tier player. Assign responsibilities to the tactician and fast reflex/JEV layer.
 Enumerate competing approaches, choose an initial hypothesis, and choose review intervals measured in decisions.
 Start with an AI policy (kind ai, code null). We must collect gameplay evidence before proposing executable code.
-Provide useful instructions, not assertions of success. No built-in solution or examples are supplied.`, {
+The goal defines success; do not assume it is attainable. No built-in solution or examples are supplied.`, {
     rules: game.rules, goal: game.goal, observation,
   }, signal);
   if (plan.policy.kind !== "ai") throw new Error("Initial player must be AI-first");

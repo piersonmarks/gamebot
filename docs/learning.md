@@ -28,6 +28,22 @@ Ordinary play starts a new AI player unless `--policy=latest` or an explicit art
 
 Research resumes the latest evaluated player and prior findings by default. `--fresh` starts from rules and an AI player without loading prior policies or findings. This is a new experiment, and its selected player replaces the latest pointer when it completes successfully. `--policy=/absolute/path/player.json` selects a particular starting revision. Policies carry the game ID, rule version and goal; mismatches fail rather than silently replaying a policy for another task.
 
+## Cold-start evaluation
+
+To test whether a new GameBot instance can develop a successful player from its rules and goal:
+
+```sh
+npm run autoplay -- --game=2048 --cold-start --seed=1 --verbose
+```
+
+Each invocation starts a new process and a separate experiment directory. It loads no previous policies, findings, skills, tool drafts or memory, and does not modify the shared research history or latest policy. `--policy` is rejected in this mode. The first player is AI-only. Subsequent revisions may use evidence and code produced inside this experiment. The models receive the rules, observations, legal actions and goal, with the general three-tier research instructions and execution interface. No example solution, strategy hints, game implementation source, or assertion that the goal is achievable is supplied. Built-in heuristics are not used.
+
+The experiment saves its rules, goal, seed and model/budget configuration in `experiment.json`, and all gameplay/revision evidence in `runs.jsonl`. `result.json` distinguishes the initial player, the first observed win (episode, policy, steps and cumulative model calls), and the selected player's performance on previously unused test seeds. `goalReachedOnTest` means at least one verified goal achievement on that final set; it is not a guarantee of reliable wins. If the initial AI player already wins, that is recorded separately from improvement through research. An interrupted or budget-exhausted run retains its journal but has no completed final-audit result.
+
+Repeat with other `--seed` values for independent cold starts. Reusing a seed reproduces the game random streams, not necessarily model outputs. `--rounds`, `--games`, `--turns` and `--max-calls` bound the experiment. `--watch` explicitly replays its selected artifact; subsequent ordinary play still does not load it automatically.
+
+This tests a cold harness, not a model with erased pretraining: a pretrained model may already know 2048. No saved GameBot knowledge or demonstrations are supplied, and learning from the run's own feedback is intentional.
+
 Research defaults to five rounds, three games per seed set and 5,000 decisions per game. `--rounds`, `--games`, `--turns`, `--seed` and `--max-calls` are configurable. The shared model-call budget defaults to 10,000; retries are disabled and each request has a two-minute timeout. These commands make model calls and can incur substantial provider costs. A small turn limit is useful for checking setup, but a truncated game is not evidence of a loss. Ctrl+C aborts in-flight model work and leaves completed evidence on disk. `--watch` opens a game with the selected artifact after research.
 
 ## The three tiers

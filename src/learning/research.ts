@@ -83,9 +83,13 @@ function better(candidate: ReturnType<typeof metrics>, incumbent: ReturnType<typ
 export async function runResearch<State, Action>(options: {
   game: LearningGame<State, Action>; models: PlayerModelRunner; rounds: number; games: number;
   maxSteps: number; firstSeed: number; signal: AbortSignal; policy?: PlayerPolicy; fresh?: boolean;
+  /** Isolated experiment: no prior policies/findings and no writes to shared learning state. */
+  coldStart?: boolean;
   report?: LearningReporter;
 }) {
   const { game, models, signal } = options;
+  if (options.coldStart && options.policy) throw new Error("Cold-start experiments cannot use a supplied policy");
+  const startEmpty = options.fresh || options.coldStart;
   for (const value of [options.rounds, options.games, options.maxSteps]) {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error("Research rounds, games and turn limits must be positive integers");
   }
@@ -94,6 +98,13 @@ export async function runResearch<State, Action>(options: {
   const directory = resolve(".gamebot", "research", game.id, randomUUID());
   await mkdir(directory, { recursive: true });
   const journal = join(directory, "runs.jsonl");
+  const experiment = {
+    game: game.id, gameVersion: game.version, rules: game.rules, goal: game.goal,
+    coldStart: options.coldStart ?? false, rounds: options.rounds, games: options.games,
+    maxSteps: options.maxSteps, firstSeed: options.firstSeed, maxCalls: models.maxCalls,
+    models: Object.fromEntries(Object.entries(models.models).map(([role, model]) => [role, typeof model === "string" ? model : model.modelId])),
+  };
+  await writeFile(join(directory, "experiment.json"), JSON.stringify(experiment, null, 2) + "\n");
   const report: LearningReporter = async event => {
     await appendFile(journal, JSON.stringify({ time: new Date().toISOString(), ...event }) + "\n");
     await options.report?.(event);
@@ -105,6 +116,8 @@ export async function runResearch<State, Action>(options: {
     return path;
   };
   const seeds = (set: number) => Array.from({ length: options.games }, (_, index) => options.firstSeed + set * options.games + index);
+  let episodes = 0;
+  let firstWin: { episode: number; policyId: string; set: string; seed: number; steps: number; modelCalls: number } | undefined;
   const evaluate = async (policy: PlayerPolicy, set: string, seedSet: number[]) => {
     const results: EpisodeResult[] = [];
     for (const seed of seedSet) {
@@ -113,29 +126,33 @@ export async function runResearch<State, Action>(options: {
         report: event => report({ ...event, detail: { policyId: policyId(policy), set, seed, event: event.detail } }),
       });
       results.push(result);
+      episodes++;
+      if (result.won && !firstWin) {
+        firstWin = { episode: episodes, policyId: policyId(policy), set, seed, steps: result.steps, modelCalls: models.usage.calls };
+        await report({ type: "research.first-win", detail: firstWin });
+      }
       await report({ type: "episode.completed", detail: { policyId: policyId(policy), set, ...result } });
     }
     return { metrics: metrics(results), results };
   };
   let baseline = options.policy;
-  if (!baseline && !options.fresh) {
+  if (!baseline && !startEmpty) {
     try { baseline = await loadPlayer("latest", game); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   baseline ??= await initializePlayer(game, await (await game.create(options.firstSeed)).observe(), models, signal, report);
   await save(baseline);
-  await report({ type: "research.started", detail: { game: game.id, goal: game.goal, rounds: options.rounds,
-    games: options.games, maxSteps: options.maxSteps, firstSeed: options.firstSeed, baseline: policyId(baseline),
-    models: Object.fromEntries(Object.entries(models.models).map(([role, model]) => [role, typeof model === "string" ? model : model.modelId])),
-    maxCalls: models.maxCalls, journal } });
-  const historyPath = resolve(".gamebot", "games", game.id, "research-history.jsonl");
+  await report({ type: "research.started", detail: { ...experiment, baseline: policyId(baseline), journal } });
+  const historyPath = options.coldStart ? join(directory, "research-history.jsonl")
+    : resolve(".gamebot", "games", game.id, "research-history.jsonl");
   let history: unknown[] = [];
   try {
-    history = options.fresh ? [] : (await readFile(historyPath, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line))
+    history = startEmpty ? [] : (await readFile(historyPath, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line))
       .filter(item => item.gameVersion === game.version && item.goal === game.goal.description).slice(-20);
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   let champion = baseline;
-  let championTrain = await evaluate(champion, "train", seeds(0));
+  const initialTrain = await evaluate(champion, "train", seeds(0));
+  let championTrain = initialTrain;
   const tried = new Set([policyId(champion)]);
   for (let round = 1; round <= options.rounds; round++) {
     signal.throwIfAborted();
@@ -144,7 +161,7 @@ export async function runResearch<State, Action>(options: {
       hypothesis: z.string(), policy: playerPolicySchema,
     }), `You are the research strategist improving a three-tier game player. Investigate the gameplay evidence and failures.
 Enumerate competing explanations and approaches; propose one executable experiment. You can change strategy, tactical/reflex instructions,
-review intervals, or replace AI leaf decisions with generated code or a hybrid. Implement new features or search algorithms if supported by evidence.
+review intervals, or replace AI leaf decisions with generated code or a hybrid. Choose the implementation based on your findings.
 Keep the user goal authoritative. Do not assume a win or optimality. Errors, rejected hypotheses and computation cost are evidence.
 Avoid repeating tried policies. Only measured performance on fresh matched games can promote a revision.
 ${codeContract}`, {
@@ -199,7 +216,7 @@ ${codeContract}`, {
   const path = await save(selected);
   signal.throwIfAborted();
   // Only evaluated, error-free policies may become latest. Ordinary play never loads this implicitly.
-  if (selectedTest.metrics.errors === 0) {
+  if (!options.coldStart && selectedTest.metrics.errors === 0) {
     const latest = latestPlayerPath(game.id);
     await mkdir(dirname(latest), { recursive: true });
     const temporary = `${latest}.${randomUUID()}.tmp`;
@@ -207,8 +224,11 @@ ${codeContract}`, {
     signal.throwIfAborted();
     await rename(temporary, latest);
   }
-  const result = { policyPath: path, policyId: policyId(selected), promoted, baselineTest: baselineTest.metrics,
+  const result = { policyPath: path, policyId: policyId(selected), promoted, coldStart: options.coldStart ?? false,
+    episodes, firstWin: firstWin ?? null, initialTrain: initialTrain.metrics, baselineTest: baselineTest.metrics,
+    goalReachedOnTest: selectedTest.metrics.errors === 0 && selectedTest.metrics.wins > 0,
     candidateTest: championTest.metrics, selectedTest: selectedTest.metrics, usage: models.usage, journal };
+  await writeFile(join(directory, "result.json"), JSON.stringify(result, null, 2) + "\n");
   await report({ type: "research.completed", detail: result });
   return result;
 }

@@ -66,4 +66,4 @@ input contains state (the observed game state), candidates (id, description, act
 Use plain JavaScript with helper functions as needed. Each invocation is fresh: no persistent globals.
 There are no imports, filesystem, network, process, clock or random APIs. Only JSON observations enter the isolated engine.
 Execution is bounded to 100 ms and 32 MiB per decision. The game rules, success evaluator and budgets are not editable.
-You may implement simulations and search yourself from the supplied rules. Do not assume access to hidden state or future randomness.`;
+Use only the supplied observations and rules. Do not assume access to hidden state or future randomness.`;

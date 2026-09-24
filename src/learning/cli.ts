@@ -31,13 +31,15 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
   process.once("SIGINT", stop);
   const report = learningConsole(process.argv.includes("--verbose"));
   try {
-    const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? 10000), report);
     const selection = learningArgument("policy");
-    if (selection !== undefined && process.argv.includes("--fresh")) throw new Error("Use either --fresh or --policy");
+    const coldStart = process.argv.includes("--cold-start");
+    if (selection !== undefined && (process.argv.includes("--fresh") || coldStart)) throw new Error("--policy cannot be combined with --fresh or --cold-start");
+    const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? 10000), report);
     const policy = selection === undefined ? undefined : await loadPlayer(selection, game);
     console.log(`Researching ${game.id}: strategist → tactician → reflex/JEV; model-call budget ${models.maxCalls}. Ctrl+C stops the run.`);
+    if (coldStart) console.log("Cold start: rules and goal only; prior learning is excluded and results stay in this experiment.");
     const result = await runResearch({
-      game, models, policy, fresh: process.argv.includes("--fresh"),
+      game, models, policy, fresh: process.argv.includes("--fresh"), coldStart,
       rounds: Number(learningArgument("rounds") ?? 5), games: Number(learningArgument("games") ?? 3),
       maxSteps: Number(learningArgument("turns") ?? 5000), firstSeed: Number(learningArgument("seed") ?? randomInt(1, 2 ** 30)),
       signal: controller.signal, report,
