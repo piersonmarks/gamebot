@@ -1,8 +1,9 @@
 import { z } from "zod";
 import type { Candidate, DecisionContext, Observation, Reflex } from "../core/index.js";
-import { playerPolicySchema, type LearningGame, type PlayerPolicy } from "./policy.js";
+import { playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
 import { PlayerModelRunner, type LearningReporter } from "./models.js";
 import { runPolicyDecision } from "./code.js";
+import { observerContract, observerSourceSchema, runObserver } from "./observer.js";
 
 export async function initializePlayer<State, Action>(
   game: LearningGame<State, Action>, observation: Observation<State>, models: PlayerModelRunner,
@@ -15,7 +16,9 @@ export async function initializePlayer<State, Action>(
   }), `Understand this game and establish the initial three-tier player. Assign responsibilities to the tactician and fast reflex/JEV layer.
 Enumerate competing approaches and choose an initial hypothesis. The tactician supervises reflex decisions and outcomes and decides when to involve you or request learning.
 There are no scheduled reviews. Set the legacy tacticianEvery and strategistEvery fields to null.
-Start with an AI policy (kind ai, code null, jev null). We must collect gameplay evidence before proposing executable code or custom Jev questions.
+Start with an AI action policy (kind ai, code null, jev null), plus an observer program that defines when tactical attention is needed.
+Collect gameplay evidence before proposing action-selection code or custom Jev questions. The observer only monitors evidence.
+${observerContract}
 The goal defines success; do not assume it is attainable. No built-in solution or examples are supplied.`, {
     rules: game.rules, goal: game.goal, evaluation: game.evaluation, observation,
   }, signal);
@@ -29,11 +32,22 @@ export class LearningReviewRequested extends Error {
   constructor(readonly requestedBy: "tactician" | "strategist", reason: string) { super(reason); }
 }
 
-/** Sol supervises each observation; Jev answers judgments, never routes escalation. */
+export interface PlayerControllerState<State> {
+  policyId: string;
+  strategy?: string;
+  tactic?: string;
+  observer?: string;
+  baseline?: { observation: Observation<State>; outcome: { done: boolean; won: boolean; score: number } };
+  recent: unknown[];
+}
+
+/** A model-authored observer gates Sol; Jev answers judgments, never routes escalation. */
 export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> {
   private policy?: PlayerPolicy;
   private strategy?: string;
   private tactic?: string;
+  private observer?: string;
+  private baseline?: PlayerControllerState<State>["baseline"];
   private goalRevision?: number;
   private recent: unknown[] = [];
 
@@ -41,17 +55,36 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
     game: LearningGame<State, Action>;
     models: PlayerModelRunner;
     policy?: PlayerPolicy;
+    controller?: PlayerControllerState<State>;
     reflex?: Reflex<State, Action>;
     report?: LearningReporter;
     learning?: { evidence(): unknown };
   }) {
     this.policy = options.policy && playerPolicySchema.parse(options.policy);
+    this.observer = this.policy?.observer ?? undefined;
+    const saved = options.controller;
+    if (saved) {
+      if (!this.policy || saved.policyId !== policyId(this.policy)) throw new Error("Controller does not match the active player policy");
+      this.strategy = saved.strategy;
+      this.tactic = saved.tactic;
+      this.observer = saved.observer ?? this.observer;
+      this.baseline = structuredClone(saved.baseline);
+      this.recent = structuredClone(saved.recent);
+    }
+  }
+
+  snapshot(): PlayerControllerState<State> | undefined {
+    if (!this.policy) return undefined;
+    return structuredClone({ policyId: policyId(this.policy), strategy: this.strategy, tactic: this.tactic,
+      observer: this.observer, baseline: this.baseline, recent: this.recent });
   }
 
   replacePolicy(policy: PlayerPolicy): void {
     this.policy = playerPolicySchema.parse(policy);
     this.strategy = this.policy.strategy;
     this.tactic = undefined;
+    this.observer = this.policy.observer ?? undefined;
+    this.baseline = undefined;
   }
 
   private async prepare(context: DecisionContext<State>, signal: AbortSignal) {
@@ -59,36 +92,55 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
     if (this.goalRevision !== undefined && this.goalRevision !== context.authority.goalRevision) {
       this.policy = undefined;
       this.recent = [];
-      this.strategy = this.tactic = undefined;
+      this.strategy = this.tactic = this.observer = undefined;
+      this.baseline = undefined;
     }
     this.goalRevision = context.authority.goalRevision;
     if (!this.policy) this.policy = await initializePlayer({ ...this.options.game, goal: context.authority.goal },
       context.observation, this.options.models, signal, this.options.report);
     this.strategy ??= this.policy.strategy;
+    this.observer ??= this.policy.observer ?? undefined;
+    this.baseline ??= structuredClone({ observation: context.observation, outcome: this.options.game.outcome(context.observation.state) });
   }
 
   /** Also consumes terminal, unavailable-action and error observations without asking Jev for a move. */
-  async supervise(context: DecisionContext<State>, signal: AbortSignal, detail?: unknown): Promise<string | null> {
+  async supervise(context: DecisionContext<State>, signal: AbortSignal, detail?: unknown): Promise<{ reviewed: boolean; immediateAction: string | null }> {
     await this.prepare(context, signal);
     const evidence = {
       rules: this.options.game.rules, evaluation: this.options.game.evaluation, authority: context.authority,
       observation: context.observation, outcome: this.options.game.outcome(context.observation.state),
       signals: context.signals, lastVerification: context.lastVerification, recent: this.recent, detail,
       learningAvailable: !!this.options.learning, learning: this.options.learning?.evidence(),
+      strategy: this.strategy, tactic: this.tactic ?? this.policy!.tactics, baseline: this.baseline,
+    };
+    const attention = this.observer ? await runObserver(this.observer, evidence, signal)
+      : { wake: true, reason: "Initialize monitoring for a legacy policy without an observer" };
+    await this.options.report?.({ type: "observer.decision", detail: attention });
+    if (!attention.wake) return { reviewed: false, immediateAction: null };
+    const adoptObserver = async (source: string, tactic: string) => {
+      const baseline = structuredClone({ observation: context.observation, outcome: evidence.outcome });
+      await runObserver(source, { ...evidence, strategy: this.strategy, tactic, baseline }, signal);
+      this.observer = source;
+      this.tactic = tactic;
+      this.baseline = baseline;
+      await this.options.report?.({ type: "observer.configured", detail: { source, baseline } });
     };
     const reviewTactics = (strategyReviewed: boolean) => this.options.models.ask("tactician", z.object({
       instruction: z.string().min(1).max(6000), immediateAction: z.string().max(2000).nullable(),
-      review: z.enum(["none", "strategist", "learning"]), reason: z.string(),
-    }), `Supervise the reflex player using the current observation, previous judgments and their verified outcomes.
+      review: z.enum(["none", "strategist", "learning"]), reason: z.string(), observer: observerSourceSchema,
+    }), `The observer requested your attention. Supervise the reflex player using the current observation, previous judgments and their verified outcomes.
 You decide whether to continue, adjust tactics, ask the strategist for a new plan, or request a learning review to revise the saved policy/program.
 Game signals, milestones, setbacks, elapsed time and terminal outcomes are evidence, never automatic review triggers.
 Do not invent fixed check-in intervals. Request help when the evidence warrants it, including opportunities to improve efficiency after success.
 Use instruction for a lasting objective and immediateAction only for advice about this decision.
+When detail has no candidates (an outcome-only observation), return immediateAction=null; express future guidance in instruction.
 If learningAvailable is false, learning is disabled for this replay/benchmark: choose none or strategist.
 If strategyReviewed is true, use the updated strategy or request learning; do not request the strategist again for the same observation.
-The user goal remains authoritative.`, { ...evidence, strategy: this.strategy, responsibilities: this.policy!.tactics,
+The user goal remains authoritative. Supply observer source for the conditions that should wake you next; you may retain the current source.
+${observerContract}`, { ...evidence, attention, observer: this.observer, strategy: this.strategy, responsibilities: this.policy!.tactics,
       previousTactic: this.tactic, strategyReviewed }, signal);
     let result = await reviewTactics(false);
+    await adoptObserver(result.observer, result.instruction);
     await this.options.report?.({ type: "supervisor.decision", detail: result });
     if (result.review === "strategist") {
       const plan = await this.options.models.ask("strategist", z.object({
@@ -102,13 +154,14 @@ Preserve the user goal. Do not claim to execute code in this planning response.`
       await this.options.report?.({ type: "strategy.updated", detail: plan });
       if (plan.learn) this.requestLearning("strategist", plan.reason);
       result = await reviewTactics(true);
+      await adoptObserver(result.observer, result.instruction);
       await this.options.report?.({ type: "supervisor.decision", detail: result });
       if (result.review === "strategist") throw new Error("Supervisor requested the same strategic review twice without new evidence");
     }
     this.tactic = result.instruction;
     await this.options.report?.({ type: "tactic.updated", detail: { ...result, immediateActionExpiresAfter: context.sequence } });
     if (result.review === "learning") this.requestLearning("tactician", result.reason);
-    return result.immediateAction;
+    return { reviewed: true, immediateAction: result.immediateAction };
   }
 
   private requestLearning(role: "tactician" | "strategist", reason: string): never {
@@ -127,10 +180,11 @@ Preserve the user goal. Do not claim to execute code in this planning response.`
       signals: context.signals, lastVerification: context.lastVerification, reviewCompleted,
     });
     const proposal = this.policy!.kind === "ai" ? undefined : await runPolicyDecision(this.policy!.code!, input(), signal);
-    immediateAction = await this.supervise(context, signal, { candidates, programProposal: proposal });
-    const decision = this.policy!.kind === "ai" ? { candidateId: null, review: null }
-      : await runPolicyDecision(this.policy!.code!, input(true), signal);
-    if (decision.review) throw new Error("Program requested another review after supervision");
+    const supervision = await this.supervise(context, signal, { candidates, programProposal: proposal });
+    immediateAction = supervision.immediateAction;
+    const decision = !proposal ? { candidateId: null, review: null } : supervision.reviewed
+      ? await runPolicyDecision(this.policy!.code!, input(true), signal) : proposal;
+    if (supervision.reviewed && decision.review) throw new Error("Program requested another review after supervision");
     let choice = decision.candidateId;
     let source = "code";
     const judgments: Record<string, unknown> = {};

@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { CandidateGenerator, GameAdapter, Goal, Verifier } from "../core/index.js";
 import { evaluationSchema, type GoalEvaluation } from "./goal.js";
 import { jevPolicySchema } from "./judgment.js";
+import { observerSourceSchema } from "./observer.js";
 
 /** Rules and evaluation stay in the game package, outside the editable player. State/actions must serialize as JSON. */
 export interface LearningGame<State, Action> {
@@ -43,7 +44,7 @@ const policyFields = {
   code: z.string().max(60000).nullable(),
 };
 const legacyPolicySchema = z.object(policyFields).strict();
-export const playerPolicySchema = z.object({ ...policyFields, jev: jevPolicySchema.nullable() }).strict().superRefine((policy, context) => {
+export const playerPolicySchema = z.object({ ...policyFields, jev: jevPolicySchema.nullable(), observer: observerSourceSchema.nullable().default(null) }).strict().superRefine((policy, context) => {
   if (policy.kind === "ai" ? policy.code !== null : !policy.code?.trim()) {
     context.addIssue({ code: "custom", message: "AI policies require null code; code and hybrid policies require JavaScript" });
   }
@@ -62,11 +63,14 @@ const artifactFields = {
 export const playerArtifactSchema = z.union([
   z.object({ ...artifactFields, format: z.literal("gamebot-player-v2"), policy: playerPolicySchema }),
   z.object({ ...artifactFields, format: z.literal("gamebot-player-v1"), policy: legacyPolicySchema })
-    .transform(artifact => ({ ...artifact, format: "gamebot-player-v2" as const, policy: { ...artifact.policy, jev: null } })),
-]).pipe(z.object({ ...artifactFields, format: z.literal("gamebot-player-v2"), policy: playerPolicySchema }));
+    .transform(artifact => ({ ...artifact, format: "gamebot-player-v2" as const, policy: playerPolicySchema.parse({ ...artifact.policy, jev: null }) })),
+]);
 
 export function policyId(policy: PlayerPolicy): string {
-  return createHash("sha256").update(JSON.stringify(playerPolicySchema.parse(policy))).digest("hex").slice(0, 16);
+  const parsed = playerPolicySchema.parse(policy);
+  // Adding monitoring support must not rename existing policy artifacts.
+  const { observer, ...legacy } = parsed;
+  return createHash("sha256").update(JSON.stringify(observer === null ? legacy : parsed)).digest("hex").slice(0, 16);
 }
 
 export function latestPlayerPath(gameId: string, goal?: Goal): string {
@@ -104,10 +108,12 @@ export async function loadPlayer<State, Action>(selection: string, game: Learnin
 export const codeContract = `Code must define a synchronous function choose(input) returning an offered candidate ID.
 For hybrid policies only, return null to delegate the current decision to the AI reflex.
 Alternatively return {candidateId: an offered ID or null, review: "tactician" | "strategist" | null}.
-The tactician supervises each observation and program proposal, and decides whether higher reasoning is needed.
+The model-authored observer inspects observations and program proposals and decides when to wake the tactician.
+The tactician decides whether higher reasoning is needed. A program review request is evidence for the observer, not an automatic model call.
 There are no scheduled reviews. Legacy tacticianEvery and strategistEvery fields are ignored; set them to null.
-Request a review conditionally using current observations when it can affect your decision. After supervision,
+Request a review conditionally using current observations when it can affect your decision. If the observer wakes the tactician, after supervision,
 choose is called once more with updated strategy/tactic and reviewCompleted=true; it must not request another review.
+If the observer declines to wake, your original candidateId must be actionable (or null for hybrid AI delegation); a review-only result cannot execute.
 The tactic is a lasting objective; immediateAction is advice valid only for this decision. Code cannot rewrite its own program during play.
 input contains state (the observed game state), candidates (id, description, action), goal, directive, strategy, tactic, and recent decisions.
 Use plain JavaScript with helper functions as needed. Each invocation is fresh: no persistent globals.

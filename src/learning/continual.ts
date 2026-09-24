@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { SessionRuntime, type GameAdapter, type StepResult, type TraceSink, type Signals, type Verification } from "../core/index.js";
-import { HierarchicalPlayer, initializePlayer, LearningReviewRequested } from "./player.js";
+import { HierarchicalPlayer, initializePlayer, LearningReviewRequested, type PlayerControllerState } from "./player.js";
 import { ModelBudgetExceeded, ModelProviderError, PlayerModelRunner, type LearningReporter, type LearningEvent } from "./models.js";
 import { playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
+import { ObserverError } from "./observer.js";
 import { preflightPolicy } from "./preflight.js";
 import { proposeRevision, type Revision } from "./revision.js";
 
@@ -25,6 +26,7 @@ interface LearningCheckpoint<State> {
   trial?: { previous: PlayerPolicy; reference: Feedback<State>; hypothesis: string };
   history: unknown[]; tried: string[]; usage: PlayerModelRunner["usage"];
   terminal: boolean;
+  controller?: PlayerControllerState<State>;
 }
 export interface ContinualOptions<State, Action> {
   game: LearningGame<State, Action>; models: PlayerModelRunner; signal: AbortSignal;
@@ -145,7 +147,7 @@ export class ContinualLearningSession<State, Action> {
     playerPolicySchema.parse(this.checkpoint.policy);
     if (!this.checkpoint.tried.length) this.checkpoint.tried.push(policyId(this.checkpoint.policy));
     await this.savePolicy();
-    this.buildRuntime();
+    this.buildRuntime(!!this.options.resume && game.continuity !== "persistent");
     await this.persist();
     await this.emit("episode.started", { state: this.state, episode: this.episodes + 1, policyId: policyId(this.checkpoint.policy) });
     await this.emit(this.options.resume ? "learning.resumed" : "learning.started", {
@@ -154,9 +156,12 @@ export class ContinualLearningSession<State, Action> {
     });
   }
 
-  private buildRuntime() {
+  private buildRuntime(newEpisode = false) {
     const { game, models } = this.options;
-    this.player = new HierarchicalPlayer({ game, models, policy: this.checkpoint.policy,
+    if (newEpisode && this.checkpoint.controller) {
+      this.checkpoint.controller = { ...this.checkpoint.controller, baseline: undefined, recent: [], tactic: undefined };
+    }
+    this.player = new HierarchicalPlayer({ game, models, policy: this.checkpoint.policy, controller: this.checkpoint.controller,
       learning: { evidence: () => ({ window: this.describeWindow("observation"), trial: this.checkpoint.trial,
         history: this.checkpoint.history.slice(-6) }) }, report: async event => {
       if (event.type.startsWith("reflex.")) this.judgments[event.type.slice(7)] = event.detail;
@@ -185,7 +190,7 @@ export class ContinualLearningSession<State, Action> {
       let result: StepResult<State, Action>;
       try { result = await this.runtime.step(); }
       catch (error) {
-        if (signal.aborted || error instanceof ModelBudgetExceeded || error instanceof ModelProviderError || error !== this.decisionError) throw error;
+        if (signal.aborted || error instanceof ModelBudgetExceeded || error instanceof ModelProviderError || error instanceof ObserverError || error !== this.decisionError) throw error;
         const before = await this.adapter.observe();
         this.checkpoint.window!.after = structuredClone(before.state);
         if (error instanceof LearningReviewRequested) {
@@ -212,13 +217,12 @@ export class ContinualLearningSession<State, Action> {
       if (outcome.done) { this.checkpoint.episodes++; this.checkpoint.terminal = true; }
       await this.persist();
       await this.emit("episode.step", transition);
-      // Present final/unavailable/failed observations to Sol; events never invoke research directly.
-      if (outcome.done || !result.candidate || result.verification?.status === "unknown" || result.verification?.status === "failure") {
-        await this.superviseObservation(outcome.done ? outcome.won ? "won" : "game-over"
-          : !result.candidate ? "blocked" : "verification-failure", result.verification,
-          result.verification?.status === "unknown" || result.verification?.status === "failure"
-            ? result.verification.reason ?? "Unverified action" : undefined);
-      }
+      // Every outcome reaches the cheap observer. Only its model-authored conditions may wake Sol.
+      await this.superviseObservation(outcome.done ? outcome.won ? "won" : "game-over"
+        : !result.candidate ? "blocked" : "outcome", result.verification,
+        result.verification?.status === "unknown" || result.verification?.status === "failure"
+          ? result.verification.reason ?? "Unverified action" : undefined);
+      await this.persist();
       return result;
     });
   }
@@ -234,7 +238,7 @@ export class ContinualLearningSession<State, Action> {
       this.adapter = await this.options.game.create(this.seed + this.checkpoint.episodes);
       this.startWindow((await this.adapter.observe()).state);
       this.checkpoint.terminal = this.options.game.outcome(this.state).done;
-      this.buildRuntime();
+      this.buildRuntime(true);
       await this.persist();
       await this.emit("episode.started", { state: this.state, episode: this.episodes + 1, policyId: policyId(this.checkpoint.policy!) });
     });
@@ -322,7 +326,7 @@ export class ContinualLearningSession<State, Action> {
     try {
       const proposal = pending.proposal ?? await proposeRevision(models, {
         mode: "continual", rules: game.rules, goal: game.goal, evaluation: game.evaluation,
-        currentPolicy: this.checkpoint.policy, training: { results: [pending.feedback] },
+        currentPolicy: this.checkpoint.policy, controller: this.player.snapshot(), training: { results: [pending.feedback] },
         trial: this.checkpoint.trial, history: this.checkpoint.history.slice(-6), tried: this.checkpoint.tried,
         round: this.reviews + 1, budget: { remainingModelCalls: models.maxCalls - models.usage.calls },
       }, signal);
@@ -389,7 +393,10 @@ export class ContinualLearningSession<State, Action> {
       gameVersion: this.options.game.version, goal: this.options.game.goal, evaluation: this.options.game.evaluation,
       policy: this.checkpoint.policy, policyStatus: this.policyStatus, evidence: "observational; not a matched benchmark promotion" });
   }
-  private persist() { return this.writeJson(join(this.directory, "checkpoint.json"), this.checkpoint); }
+  private persist() {
+    if (this.player) this.checkpoint.controller = this.player.snapshot();
+    return this.writeJson(join(this.directory, "checkpoint.json"), this.checkpoint);
+  }
   private async writeJson(path: string, value: unknown) {
     const temporary = `${path}.tmp`;
     await writeFile(temporary, JSON.stringify(value) + "\n");

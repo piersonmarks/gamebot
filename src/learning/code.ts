@@ -1,7 +1,7 @@
 import { getQuickJS } from "quickjs-emscripten";
 
 /** WASM interpreter: no host objects, imports or I/O are exposed to candidate code. */
-export async function runPolicyProgram(source: string, entry: "choose" | "prepare" | "select", input: unknown, signal: AbortSignal): Promise<unknown> {
+export async function runPolicyProgram(source: string, entry: "choose" | "prepare" | "select" | "observe", input: unknown, signal: AbortSignal): Promise<unknown> {
   signal.throwIfAborted();
   const engine = await getQuickJS();
   const deadline = performance.now() + 100;

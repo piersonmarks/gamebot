@@ -1,22 +1,35 @@
 import type { LearningGame, PlayerPolicy } from "./policy.js";
 import { runPolicyDecision } from "./code.js";
+import { runObserver } from "./observer.js";
 import { prepareJudgments, selectJudgmentAction } from "./judgment.js";
 
 /** Contract checks on real recorded observations, not simulated games or a substitute for evaluation. */
 export async function preflightPolicy<State, Action>(game: LearningGame<State, Action>, policy: PlayerPolicy,
   states: readonly State[], signal: AbortSignal) {
-  if (!policy.code && !policy.jev) return { passed: true, states: 0, calls: 0, maxMs: 0 };
+  if (!policy.code && !policy.jev && !policy.observer) return { passed: true, states: 0, calls: 0, maxMs: 0 };
   let calls = 0;
+  let playable = 0;
   let maxMs = 0;
   const checked = new Set<string>();
   try {
     for (const state of states) {
       const key = JSON.stringify(state);
-      if (checked.has(key) || game.outcome(state).done) continue;
+      if (checked.has(key)) continue;
       checked.add(key);
+      if (policy.observer) {
+        const started = performance.now();
+        await runObserver(policy.observer, { observation: { state }, outcome: game.outcome(state),
+          authority: { goal: game.goal, goalRevision: 1, directiveRevision: 0 }, rules: game.rules, evaluation: game.evaluation,
+          strategy: policy.strategy, tactic: policy.tactics, baseline: { observation: { state }, outcome: game.outcome(state) },
+          signals: {}, recent: [], learningAvailable: false, detail: { reason: "preflight" } }, signal);
+        maxMs = Math.max(maxMs, performance.now() - started);
+        calls++;
+      }
+      if (game.outcome(state).done) continue;
       const candidates = await game.candidates.generate({ observation: { state }, sequence: 1,
         authority: { goal: game.goal, goalRevision: 1, directiveRevision: 0 }, signals: {} });
       if (!candidates.length) continue;
+      playable++;
       const input = { state, candidates, goal: game.goal, directive: null, strategy: policy.strategy,
         tactic: policy.tactics, immediateAction: null, recent: [], signals: {}, rules: game.rules, responsibilities: policy.reflex };
       for (let repeat = 0; repeat < 2; repeat++) {
@@ -41,7 +54,8 @@ export async function preflightPolicy<State, Action>(game: LearningGame<State, A
         calls++;
       }
     }
-    if ((policy.code || policy.jev) && !calls) throw new Error("No playable recorded observations available for preflight");
+    if ((policy.code || policy.jev) && !playable) throw new Error("No playable recorded observations available for preflight");
+    if (policy.observer && !checked.size) throw new Error("No recorded observations available to check observer");
     return { passed: true, states: checked.size, calls, maxMs };
   } catch (error) {
     signal.throwIfAborted();
