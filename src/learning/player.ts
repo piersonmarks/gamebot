@@ -3,7 +3,7 @@ import type { Candidate, DecisionContext, Observation, Reflex } from "../core/in
 import { playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
 import { PlayerModelRunner, type LearningReporter } from "./models.js";
 import { runPolicyDecision } from "./code.js";
-import { observerContract, observerSourceSchema, runObserver } from "./observer.js";
+import { observerContract, observerSourceSchema, runObserver, ObserverError } from "./observer.js";
 
 export async function initializePlayer<State, Action>(
   game: LearningGame<State, Action>, observation: Observation<State>, models: PlayerModelRunner,
@@ -117,7 +117,9 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
       : { wake: true, reason: "Initialize monitoring for a legacy policy without an observer" };
     await this.options.report?.({ type: "observer.decision", detail: attention });
     if (!attention.wake) return { reviewed: false, immediateAction: null };
-    const adoptObserver = async (source: string, tactic: string) => {
+    const adoptObserver = async (replacement: string | null, tactic: string) => {
+      const source = replacement ?? this.observer;
+      if (!source) throw new ObserverError("A player without monitoring requires observer source, not null");
       const baseline = structuredClone({ observation: context.observation, outcome: evidence.outcome });
       await runObserver(source, { ...evidence, strategy: this.strategy, tactic, baseline }, signal);
       this.observer = source;
@@ -127,7 +129,7 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
     };
     const reviewTactics = (strategyReviewed: boolean) => this.options.models.ask("tactician", z.object({
       instruction: z.string().min(1).max(6000), immediateAction: z.string().max(2000).nullable(),
-      review: z.enum(["none", "strategist", "learning"]), reason: z.string(), observer: observerSourceSchema,
+      review: z.enum(["none", "strategist", "learning"]), reason: z.string(), observer: observerSourceSchema.nullable(),
     }), `The observer requested your attention. Supervise the reflex player using the current observation, previous judgments and their verified outcomes.
 You decide whether to continue, adjust tactics, ask the strategist for a new plan, or request a learning review to revise the saved policy/program.
 Game signals, milestones, setbacks, elapsed time and terminal outcomes are evidence, never automatic review triggers.
@@ -136,7 +138,7 @@ Use instruction for a lasting objective and immediateAction only for advice abou
 When detail has no candidates (an outcome-only observation), return immediateAction=null; express future guidance in instruction.
 If learningAvailable is false, learning is disabled for this replay/benchmark: choose none or strategist.
 If strategyReviewed is true, use the updated strategy or request learning; do not request the strategist again for the same observation.
-The user goal remains authoritative. Supply observer source for the conditions that should wake you next; you may retain the current source.
+The user goal remains authoritative. Return observer=null to retain the current observer without copying its source. Supply source only when changing monitoring, or when no observer exists.
 ${observerContract}`, { ...evidence, attention, observer: this.observer, strategy: this.strategy, responsibilities: this.policy!.tactics,
       previousTactic: this.tactic, strategyReviewed }, signal);
     let result = await reviewTactics(false);
