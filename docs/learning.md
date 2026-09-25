@@ -1,6 +1,6 @@
 # Continual game learning
 
-2048 and Snake use the same three-tier player and learning session from `@gamebot/core`. Games supply rules, observations, actions and fixed evaluators. The harness supplies one learning cycle, whether a game lasts seconds or has no ending. No winning strategy is included in the initial model prompts.
+2048, Snake, and Pac-Man use the same three-tier player and learning session from `@gamebot/core`. Games supply rules, observations, actions and fixed evaluators. The harness supplies one learning cycle, whether a game lasts seconds or has no ending. No winning strategy is included in the initial model prompts.
 
 ## Configure models once
 
@@ -10,7 +10,7 @@ Install dependencies with `npm install`, then configure your AI Gateway key:
 export AI_GATEWAY_API_KEY='your-key'
 ```
 
-2048 and Snake use these pinned defaults, verified in the [Gateway catalog](https://ai-gateway.vercel.sh/v1/models) on 2026-09-24:
+2048, Snake, and Pac-Man use these pinned defaults, verified in the [Gateway catalog](https://ai-gateway.vercel.sh/v1/models) on 2026-09-24:
 
 | Role | Default model | Purpose |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ There is no separate post-game learner. A model-requested review closes the curr
 
 Observation runs as bounded code without inference. Quiet AI play uses Jev alone; quiet generated-code play needs no model calls. For games declaring `realtime: true`, tactical, strategic, and learning reviews run alongside reflex control. Turn-based games can await reviews between actions. Neither mode pauses an external world's clock. The runtime reobserves and validates actions before dispatch. User budgets and Ctrl+C stop work and save evidence; they never initiate a review.
 
-Snake runs its physics and browser view in a separate process and advances on its own real-time clock after the first direction input. Blocking or suspending the agent cannot freeze either. Snake attempts end on collision or a full board, with food eaten as the score; there is no artificial food cutoff. Agent-session disposal only detaches controls. Jev or the active code policy keeps supplying directions during tactical, strategic, and learning reviews; if a reflex decision itself is late, the snake continues straight. The observer decides when to request intelligence with timing information in its observations; the harness does not pause the game or insert automatic fallback moves. Only one supervision/research chain is pending at a time; observer requests coalesce until it completes. Responses become proposals that apply between decisions, retaining the user goal and checking the current state. Stale immediate actions are discarded, and policy or authority changes invalidate outstanding tactical proposals. Revisions are preflighted before activation. Requested reviews settle at game over; Ctrl+C cancels work and saves available evidence. Viewer updates follow game ticks and show which models are busy. For Snake, `--pace` is the positive tick interval in milliseconds (default 120), including in headless mode.
+Snake and Pac-Man run their physics and browser views in separate processes and advances on its own real-time clock after the first direction input. Blocking or suspending the agent cannot freeze either. Snake attempts end on collision or a full board, with food eaten as the score; there is no artificial food cutoff. Agent-session disposal only detaches controls. Jev or the active code policy keeps supplying directions during tactical, strategic, and learning reviews; if a reflex decision itself is late, the snake continues straight. The observer decides when to request intelligence with timing information in its observations; the harness does not pause the game or insert automatic fallback moves. Only one supervision/research chain is pending at a time; observer requests coalesce until it completes. Responses become proposals that apply between decisions, retaining the user goal and checking the current state. Stale immediate actions are discarded, and policy or authority changes invalidate outstanding tactical proposals. Revisions are preflighted before activation. Requested reviews settle at game over; Ctrl+C cancels work and saves available evidence. Viewer updates follow game ticks and show which models are busy. For Snake and Pac-Man, `--pace` is the positive native tick interval in milliseconds (defaults 120 and 140), including in headless mode.
 
 The strategist/researcher can revise prompts, Jev questions and composition code, supervision instructions and observer programs, or a generated action-selection program. It can also return no revision and gather more evidence. Rules, goal evaluation and native action legality remain outside the editable player.
 
@@ -163,6 +163,6 @@ For longer-horizon integrations:
 
 `ContinualLearningSession.open(...)` accepts the game, model runner, cancellation signal and an optional already-connected adapter. `step()` runs the observer around gameplay and fulfills any model-requested supervision/learning. `finish()` cancels work and saves without requesting more AI. `restart()` is allowed only after a terminal episodic game. `runContinualLearning` drives this session for autoplay; `runResearch` remains the optional matched benchmark runner.
 
-A research entry point uses `runResearchCli(game, window)`. A bridge with its own game window supplies `open({ headless, signal, onClose })` returning a closeable handle. 2048 uses the real browser page; Snake supplies its native state renderer to the shared viewer. Connecting and rendering a game remain bridge responsibilities. The OpenRCT2 and RuneBench transport bridges still need their own complete learning-game definitions and goal feedback before they can use this loop for autonomous persistent-world play.
+A research entry point uses `runResearchCli(game, window)`. A bridge with its own game window supplies `open({ headless, signal, onClose })` returning a closeable handle. 2048 uses the real browser page; Snake and Pac-Man each own a standalone game process and native browser window. Their optional bridges observe and control them; connecting is a bridge responsibility, while rendering belongs to the game. The OpenRCT2 and RuneBench transport bridges still need their own complete learning-game definitions and goal feedback before they can use this loop for autonomous persistent-world play.
 
 The old skill `tools/` draft area remains inert. Generated player artifacts are an explicitly checked execution route; arbitrary scripts in skill folders are not enabled.

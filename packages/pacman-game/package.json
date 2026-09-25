@@ -1,0 +1,21 @@
+{
+  "name": "pacman-game",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "exports": {
+    ".": "./dist/index.js",
+    "./process": "./dist/process.js"
+  },
+  "bin": { "pacman-game": "./dist/process.js" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "play": "npm run build && node dist/process.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "^5.9.3"
+  }
+}

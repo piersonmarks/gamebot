@@ -1,0 +1,27 @@
+{
+  "name": "@gamebot/pacman",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": { "gamebot-pacman": "./dist/cli.js" },
+  "gamebot": { "playable": true, "defaultArgs": ["--window"], "researchBin": "./dist/research.js" },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "play": "node dist/cli.js"
+  },
+  "peerDependencies": { "@gamebot/core": "^0.1.0" },
+  "dependencies": { "pacman-game": "file:../pacman-game" },
+  "devDependencies": {
+    "@gamebot/core": "file:../..",
+    "@types/node": "^22.20.3",
+    "typescript": "^5.9.3"
+  }
+}
