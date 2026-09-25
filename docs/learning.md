@@ -107,6 +107,16 @@ An episodic bridge starts a fresh board on process resume. A persistent bridge m
 
 Ordinary traces still live under `.gamebot/traces/`. The launcher resolves data and relative paths from the repository root. Older package-local saves are imported without overwriting existing root files; cold-start and resume launches skip that migration.
 
+## Explain a saved player
+
+```sh
+npm run report -- .gamebot/research/2048/<run-id>
+```
+
+You can also pass that run's `result.json` or `checkpoint.json`. The command writes `report.md` in the run directory, with the saved strategy, tactical and Jev responsibilities, current controller updates, revision history, per-game evidence, model usage, exact generated programs, and a replay command. It uses recorded explanations; it does not call a model, run code from the policy, build connectors, or launch a game.
+
+Reports work for live learning and matched benchmarks, including interrupted runs with a checkpoint. The live checkpoint takes precedence over an older result after resume. Live trials are labeled observational, and benchmark reports include the selected player's held-out results. Older live traces without explicit outcomes show those outcomes as not recorded. A successful game during a changing policy is not treated as proof of the final player's win rate. Keep the whole run directory together when copying it to another machine.
+
 ## Optional matched benchmarks
 
 ```sh

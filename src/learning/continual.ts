@@ -212,7 +212,7 @@ export class ContinualLearningSession<State, Action> {
       this.boundaryAt = performance.now();
       const outcome = this.options.game.outcome(window.after);
       const transition = { step: this.checkpoint.steps, before: result.before.state, action: result.candidate?.action,
-        after: observation.state, verification: result.verification, judgments: this.judgments };
+        after: observation.state, outcome, verification: result.verification, judgments: this.judgments };
       window.samples.push(structuredClone(transition));
       if (window.samples.length > 12) window.samples.splice(4, 1);
       if (outcome.done) { this.checkpoint.episodes++; this.checkpoint.terminal = true; }
