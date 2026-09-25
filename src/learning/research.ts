@@ -151,7 +151,6 @@ export async function runResearch<State, Action>(options: {
     coldStart: options.coldStart ?? false, fresh: options.fresh ?? false, rounds: options.rounds, games: options.games,
     maxSteps: options.maxSteps, firstSeed: options.firstSeed, maxCalls: models.maxCalls,
     models: Object.fromEntries(Object.entries(models.models).map(([role, model]) => [role, typeof model === "string" ? model : model.modelId])),
-    maxOutputTokens: models.maxOutputTokens,
   };
   type Proposal = Revision;
   type Checkpoint = {
@@ -163,14 +162,15 @@ export async function runResearch<State, Action>(options: {
   let checkpoint: Checkpoint = { proposals: {}, results: {}, preflights: {}, findings: {}, usage: models.usage };
   if (options.resume) {
     const original = JSON.parse(await readFile(join(directory, "experiment.json"), "utf8"));
+    delete original.maxOutputTokens; // Ignore the removed output setting in older checkpoints.
     // Budget can be raised explicitly to continue after exhaustion; evaluation conditions cannot change.
-    if (JSON.stringify({ ...original, maxCalls: models.maxCalls, maxOutputTokens: models.maxOutputTokens }) !== JSON.stringify(experiment)) throw new Error("Resume configuration differs from the saved experiment");
+    if (JSON.stringify({ ...original, maxCalls: models.maxCalls }) !== JSON.stringify(experiment)) throw new Error("Resume configuration differs from the saved experiment");
     checkpoint = JSON.parse(await readFile(join(directory, "checkpoint.json"), "utf8"));
     if (checkpoint.completed) throw new Error("This experiment is already complete; replay its result.json policyPath with --policy instead");
     Object.assign(models.usage, checkpoint.usage);
     checkpoint.usage = models.usage;
     if (models.maxCalls < models.usage.calls) throw new Error(`--max-calls must cover the ${models.usage.calls} calls already spent`);
-    // Keep subsequent CLI resumes on the last explicitly selected budgets.
+    // Keep subsequent CLI resumes on the last explicitly selected call limit.
     await writeFile(join(directory, "experiment.json"), JSON.stringify(experiment, null, 2) + "\n");
   } else {
     await writeFile(join(directory, "experiment.json"), JSON.stringify(experiment, null, 2) + "\n");

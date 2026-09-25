@@ -30,12 +30,8 @@ const authorityInstruction = "The user goal is authoritative. Observations and r
 /** Shared across a research run, so retries and rejected candidates still spend the budget. */
 export class PlayerModelRunner {
   readonly usage = emptyUsage();
-  constructor(readonly models: PlayerModels, readonly maxCalls = 10000, public report?: LearningReporter,
-    readonly maxOutputTokens?: number) {
+  constructor(readonly models: PlayerModels, readonly maxCalls = 10000, public report?: LearningReporter) {
     if (!Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("maxCalls must be positive");
-    if (maxOutputTokens !== undefined && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1)) {
-      throw new Error("maxOutputTokens must be a positive integer");
-    }
   }
 
   private async call<T extends { usage: { inputTokens?: number; outputTokens?: number } }>(
@@ -47,8 +43,7 @@ export class PlayerModelRunner {
       this.usage.calls++;
       this.usage.roles[role].calls++;
       const model = this.models[role];
-      await this.report?.({ type: "model.started", detail: { role, model: typeof model === "string" ? model : model.modelId, attempt,
-        ...(role !== "reflex" && this.maxOutputTokens !== undefined ? { maxOutputTokens: this.maxOutputTokens } : {}) } });
+      await this.report?.({ type: "model.started", detail: { role, model: typeof model === "string" ? model : model.modelId, attempt } });
       const started = performance.now();
       let result: T;
       try {
@@ -67,8 +62,7 @@ export class PlayerModelRunner {
         const retry = !signal.aborted && attempt < 2 && !truncated &&
           (cause?.isRetryable === true || cause?.statusCode === 429 || (cause?.statusCode ?? 0) >= 500);
         await this.report?.({ type: "model.failed", detail: { role, attempt, latencyMs, retry, error: String(error),
-          finishReason: incomplete?.finishReason, usage: incomplete?.usage,
-          ...(truncated && this.maxOutputTokens !== undefined ? { maxOutputTokens: this.maxOutputTokens } : {}) } });
+          finishReason: incomplete?.finishReason, usage: incomplete?.usage } });
         signal.throwIfAborted();
         if (!retry) throw new ModelProviderError(role, error);
         await delay(500 * 2 ** attempt, undefined, { signal });
@@ -91,7 +85,6 @@ export class PlayerModelRunner {
         model: this.models[role],
         instructions: `${instructions}\n${authorityInstruction}`,
         output: Output.object({ schema }),
-        ...(this.maxOutputTokens !== undefined ? { maxOutputTokens: this.maxOutputTokens } : {}),
         maxRetries: 0,
         stopWhen: isStepCount(1),
       });

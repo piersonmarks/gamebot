@@ -38,7 +38,7 @@ Ordinary play starts from a new AI player unless you explicitly choose `--policy
 
 Autoplay runs until interrupted or a budget is reached. `--turns` caps total decisions in the learning session, `--rounds` caps learning reviews, and `--games` caps completed episodic games. These are optional; the shared `--max-calls` budget still defaults to 10,000. Research/model calls consume that budget too. Retryable provider failures get at most two retries, and every attempt counts. Tokens spent on incomplete responses are recorded. A provider outage or exhausted budget stops work without becoming a game loss or a reason to rewrite the player.
 
-Game and autoplay model generation uses the selected provider's default output allowance; GameBot adds no token ceiling. To set one explicitly, pass `--max-output-tokens=16384`. This applies to Astra/Sol generation and, when used, 2048 vision or chess AI generation; Jev evaluation does not generate text. The provider's own limits still apply. Learning sessions save the chosen output budget and restore it on resume. Override it with another positive integer, or clear it with `--max-output-tokens=default`. A truncated structured response stops the run and records its token usage; GameBot does not retry it with a larger allowance that overrides your setting.
+Game and autoplay model generation uses the selected provider's default output allowance. GameBot adds no output token ceiling; provider limits still apply.
 
 ## One learning cycle
 

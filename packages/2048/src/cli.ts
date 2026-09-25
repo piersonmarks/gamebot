@@ -5,7 +5,7 @@ import { resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { FileTraceSink, SessionRuntime, ContinualLearningSession, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
-  playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, learningOutputTokenLimit, type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions } from "@gamebot/core";
+  playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
 import { learning2048 } from "./learning.js";
@@ -43,7 +43,6 @@ const observer = argument("observe") ?? "dom";
 if (observer !== "dom" && observer !== "vision") throw new Error("--observe must be dom or vision");
 const playerModels = playerModelsFromEnv();
 const maxCalls = Number(argument("max-calls") ?? 10000);
-const maxOutputTokens = learningOutputTokenLimit();
 if (!Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("--max-calls must be positive");
 const visionModel = observer === "vision" ? process.env.GAMEBOT_VISION_MODEL ?? process.env.GAMEBOT_MODEL ?? "google/gemini-3.8-flash" : undefined;
 const visionSchema = z.object({
@@ -69,7 +68,7 @@ const onInterrupt = () => {
 };
 process.once("SIGINT", onInterrupt);
 const setupEvents: LearningEvent[] = [];
-const models = new PlayerModelRunner(playerModels, maxCalls, event => { setupEvents.push(event); }, maxOutputTokens);
+const models = new PlayerModelRunner(playerModels, maxCalls, event => { setupEvents.push(event); });
 try {
   await resolveGameGoal(definition, models, visionAbort.signal);
   maximizeScore = definition.evaluation?.objective === "score";
@@ -98,7 +97,6 @@ try {
     model: visionModel,
     schema: visionSchema,
     prompt: "Read the visible 2048 board. Return a 4x4 board from top row to bottom row, left to right, using 0 for empty cells. Read the main score number, ignoring any animated +points label. Set over or won only when the corresponding end-game overlay is visible. Set uncertain to true if any tile or score cannot be read. Do not infer hidden state.",
-    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     timeoutMs: 30_000,
     onCall(report) {
       visionUsage.calls++;

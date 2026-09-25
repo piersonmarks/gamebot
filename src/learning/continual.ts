@@ -93,6 +93,7 @@ export class ContinualLearningSession<State, Action> {
     let archivedLegacyWindow = false;
     if (this.options.resume) {
       const saved = JSON.parse(await readFile(manifestPath, "utf8"));
+      delete saved.maxOutputTokens; // Ignore the removed output setting in older checkpoints.
       if (saved.mode !== "continual-v1" || JSON.stringify(saved.identity) !== JSON.stringify(identity)) throw new Error("Resume game, goal, rules or models differ from this learning session");
       this.checkpoint = JSON.parse(await readFile(join(this.directory, "checkpoint.json"), "utf8"));
       this.seed = saved.seed;
@@ -105,12 +106,11 @@ export class ContinualLearningSession<State, Action> {
         this.checkpoint.pending = undefined;
         archivedLegacyWindow = true;
       }
-      await this.writeJson(manifestPath, { ...saved, reviewControl: "model", maxCalls: models.maxCalls,
-        maxOutputTokens: models.maxOutputTokens, limits: this.options.limits ?? saved.limits });
+      await this.writeJson(manifestPath, { ...saved, reviewControl: "model", maxCalls: models.maxCalls, limits: this.options.limits ?? saved.limits });
     } else {
       await this.writeJson(manifestPath, { mode: "continual-v1", identity, seed: this.seed,
         reviewControl: "model", coldStart: this.options.coldStart ?? false,
-        fresh: this.options.fresh ?? false, limits: this.options.limits, maxCalls: models.maxCalls, maxOutputTokens: models.maxOutputTokens });
+        fresh: this.options.fresh ?? false, limits: this.options.limits, maxCalls: models.maxCalls });
     }
     await this.emit("learning.created", { directory: this.directory, resumed: !!this.options.resume });
     models.report = async event => {
