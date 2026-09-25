@@ -36,8 +36,10 @@ export function learningConsole(verbose = false): LearningReporter {
       return;
     }
     if (event.type === "episode.completed") {
-      const item = event.detail as { seed: number; set: string; stopReason: string; score: number; steps: number };
-      console.log(`${item.set} seed ${item.seed}: ${item.stopReason}; score ${item.score}; ${item.steps} decisions`);
+      const item = event.detail as { episode?: number; seed?: number; set?: string; stopReason: string;
+        score?: number; outcome?: { score: number }; steps: number };
+      const label = item.episode === undefined ? `${item.set} seed ${item.seed}` : `Game ${item.episode}`;
+      console.log(`${label}: ${item.stopReason}; score ${item.outcome?.score ?? item.score}; ${item.steps} decisions`);
     } else if (event.type.startsWith("research.") || event.type.startsWith("learning.") || event.type === "player.initialized" ||
       verbose && !event.type.startsWith("runtime.") && event.type !== "episode.step") {
       console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);

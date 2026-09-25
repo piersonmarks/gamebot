@@ -11,7 +11,7 @@ export interface ResearchViewerOptions {
 type ViewerDetail = {
   event?: ViewerDetail; state?: unknown; after?: unknown; finalState?: unknown;
   strategy?: string; instruction?: string; policy?: { strategy: string };
-  role?: string; set?: string; seed?: number; policyId?: string; step?: number; steps?: number;
+  role?: string; set?: string; seed?: number; episode?: number; policyId?: string; step?: number; steps?: number;
   reason?: string; progress?: number; retained?: boolean; action?: unknown; error?: string; stopReason?: string; round?: number; accepted?: boolean; message?: string;
 };
 
@@ -100,7 +100,8 @@ stream.onmessage=({data})=>{
       switch (event.type) {
         case "research.setup": view.state = detail.state; view.phase = "Planning the first attempt"; break;
         case "episode.started":
-          episodes++;
+        case "episode.resumed":
+          episodes = detail.episode ?? episodes + 1;
           view.state = detail.state; view.action = "No moves yet"; view.strategy = detail.strategy ?? ""; view.tactic = "";
           view.phase = "Playing";
           view.meta = envelope.set === undefined ? `Game ${episodes} · Continual learning` : `Attempt ${episodes} · ${envelope.set === "test" ? "Final evaluation" : envelope.set === "validation" ? "Validation" : "Training"} · seed ${envelope.seed}`;

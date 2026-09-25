@@ -73,7 +73,42 @@ async function report(input) {
   } else lines.push("No final player is available. This run may have stopped before initialization or before the benchmark selected its result.");
 
   const timeline = [], games = [], sources = new Map(), warnings = [];
+  const episodesById = new Map();
   let currentGame, lineNumber = 0, pendingLine;
+  function episode(detail) {
+    let game = detail.episodeId ? episodesById.get(detail.episodeId) : undefined;
+    if (!game) {
+      game = { label: `Game ${detail.episode ?? "?"} (start ${games.length + 1})`, steps: 0, policyIds: [] };
+      games.push(game);
+    }
+    if (detail.episodeId) episodesById.set(detail.episodeId, game);
+    return game;
+  }
+  function outcome(game, value, source, priority) {
+    if (!game || typeof value?.done !== "boolean" || typeof value.won !== "boolean" || !Number.isFinite(value.score)) return;
+    if (game.outcome?.done && !value.done || (game.evidencePriority ?? 0) > priority) return;
+    game.outcome = value;
+    game.score = value.score;
+    game.status = value.done ? value.won ? "Won" : "Game over" : "Unfinished";
+    game.evidence = source;
+    game.evidencePriority = priority;
+  }
+  function recover(state, value, source, episodeId) {
+    if (state === undefined) return;
+    const matches = episodeId ? [episodesById.get(episodeId)].filter(Boolean)
+      : games.filter(game => isDeepStrictEqual(game.lastState, state));
+    if (matches.length === 1 && isDeepStrictEqual(matches[0].lastState, state)) outcome(matches[0], value, source, 1);
+  }
+  function summary(detail, source) {
+    const game = detail.episodeId ? episodesById.get(detail.episodeId) ?? episode(detail) : currentGame;
+    if (!game) return;
+    if (Number.isSafeInteger(detail.steps) && detail.steps < game.steps) return;
+    if (Number.isSafeInteger(detail.steps)) game.steps = detail.steps;
+    game.policyIds = detail.policyIds ?? game.policyIds;
+    game.lastState = detail.finalState ?? game.lastState;
+    game.stopReason = detail.stopReason ?? (detail.outcome?.done ? detail.outcome.won ? "won" : "game-over" : game.stopReason);
+    outcome(game, detail.outcome, source, 3);
+  }
   function eventLine(raw) {
     lineNumber++;
     if (!raw.trim()) return;
@@ -81,19 +116,29 @@ async function report(input) {
     const detail = event.detail?.event ?? event.detail ?? {};
     const source = `runs.jsonl:${lineNumber}${event.time ? `; ${event.time}` : ""}`;
     if (event.type === "player.decision") sources.set(detail.source, (sources.get(detail.source) ?? 0) + 1);
-    if (live && event.type === "episode.started") {
-      currentGame = { label: `Game ${detail.episode ?? "?"} (start ${games.length + 1})`, steps: 0 };
-      games.push(currentGame);
+    const evidence = `${event.type} at runs.jsonl:${lineNumber}`;
+    if (live && ["episode.started", "episode.resumed"].includes(event.type)) {
+      currentGame = episode(detail);
+      currentGame.lastState = detail.state;
+      currentGame.steps = detail.steps ?? currentGame.steps;
+      currentGame.policyIds = detail.policyIds ?? [detail.policyId].filter(Boolean);
+      delete currentGame.stopReason;
     }
-    if (live && event.type === "episode.step" && currentGame) {
-      if (detail.action !== undefined) currentGame.steps++;
-      if (detail.outcome) {
-        currentGame.score = detail.outcome.score;
-        currentGame.status = detail.outcome.done ? detail.outcome.won ? "Won" : "Game over" : "Unfinished";
+    if (live) {
+      const game = detail.episodeId ? episodesById.get(detail.episodeId) : currentGame;
+      if (event.type === "episode.step" && game) {
+        if (detail.action !== undefined) game.steps++;
+        game.lastState = detail.after;
+        if (detail.policyId && !game.policyIds.includes(detail.policyId)) game.policyIds.push(detail.policyId);
+        outcome(game, detail.outcome, evidence, 2);
       }
+      if (["episode.completed", "episode.stopped"].includes(event.type)) summary(detail, evidence);
+      if (event.type === "learning.window") recover(detail.after, detail.end, evidence, detail.episodeId);
+      if (event.type === "observer.configured") recover(detail.baseline?.observation?.state, detail.baseline?.outcome, evidence);
+      if (event.type === "learning.saved" && currentGame && !currentGame.outcome?.done) currentGame.stopReason ??= "stopped";
     }
     if (!live && event.type === "episode.completed") games.push({ label: `${detail.set} seed ${detail.seed}; ${detail.policyId}`,
-      steps: detail.steps, score: detail.score, status: detail.stopReason });
+      steps: detail.steps, score: detail.score, status: detail.stopReason, evidence, policyIds: [detail.policyId].filter(Boolean) });
     const notes = [];
     if (event.type === "player.initialized") {
       notes.push(`Initial strategy: ${detail.policy?.strategy ?? "Not recorded"}`, `Rationale: ${detail.rationale}`);
@@ -130,12 +175,25 @@ async function report(input) {
     warnings.push("No runs.jsonl was available; only saved checkpoint/result evidence is shown.");
   }
 
+  if (live && checkpoint) {
+    if (checkpoint.episode) summary({ ...checkpoint.episode, episodeId: checkpoint.episode.id,
+      episode: checkpoint.episode.number }, "checkpoint.json: episode");
+    for (const [index, feedback] of (checkpoint.history ?? []).entries()) {
+      recover(feedback.after, feedback.end, `checkpoint.json: history[${index}]`, feedback.episodeId);
+    }
+    const pending = checkpoint.pending?.feedback;
+    if (pending) recover(pending.after, pending.end, "checkpoint.json: pending.feedback", pending.episodeId);
+    recover(checkpoint.controller?.baseline?.observation?.state, checkpoint.controller?.baseline?.outcome,
+      "checkpoint.json: controller.baseline");
+  }
+
   lines.push("## Recorded results");
   const totals = live ? checkpoint ?? result : result;
   if (totals) lines.push(`${live ? "Completed games" : "Evaluated episodes"}: ${totals.episodes ?? "Not recorded"}. Decisions: ${totals.steps ?? "Not recorded"}. Learning reviews: ${totals.reviews ?? "Not recorded"}.`);
-  if (live) lines.push("Live play can change policy within a game. These outcomes do not establish a win rate for the final policy. Older journals may omit outcomes; unknown outcomes are not counted as losses. A resumed process can start a new board with the same game number.");
-  if (games.length) lines.push(["| Game / evaluation | Decisions | Score | Outcome |", "| --- | ---: | ---: | --- |",
-    ...games.map(game => `| ${cell(game.label)} | ${cell(game.steps)} | ${cell(game.score)} | ${cell(game.status)} |`)].join("\n"));
+  if (live) lines.push("Live play can change policy within a game. These outcomes do not establish a win rate for the final policy. Older outcomes are recovered only from structured evidence matching the recorded state; model prose is never used. Unknown outcomes and interruptions are not counted as losses. A resumed episodic game gets a new ID; persistent-world reconnects retain their ID.",
+    `Recorded outcomes: ${games.filter(game => game.outcome?.done && game.outcome.won).length} won; ${games.filter(game => game.outcome?.done && !game.outcome.won).length} game over; ${games.filter(game => game.outcome && !game.outcome.done).length} unfinished; ${games.filter(game => !game.outcome).length} unknown.`);
+  if (games.length) lines.push(["| Game / evaluation | Decisions | Score | Outcome | Stop reason | Policies | Evidence |", "| --- | ---: | ---: | --- | --- | --- | --- |",
+    ...games.map(game => `| ${cell(game.label)} | ${cell(game.steps)} | ${cell(game.score)} | ${cell(game.status)} | ${cell(game.stopReason ?? "—")} | ${cell(game.policyIds?.join(", "))} | ${cell(game.evidence)} |`)].join("\n"));
   else lines.push("No per-game results were recorded in the available journal.");
   if (!live && result?.selectedTest) lines.push("### Selected player on held-out games", code(JSON.stringify(result.selectedTest, null, 2), "json"));
   if (sources.size) lines.push(`Recorded decision sources: ${[...sources].map(([source, count]) => `${source}: ${count}`).join("; ")}.`);

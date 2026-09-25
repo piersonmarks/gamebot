@@ -10,12 +10,17 @@ import { preflightPolicy } from "./preflight.js";
 import { proposeRevision, type Revision } from "./revision.js";
 
 type Outcome = { done: boolean; won: boolean; score: number };
+type EpisodeStopReason = "interrupted" | "limit" | "budget" | "error" | "stopped";
+interface EpisodeRecord<State> {
+  id: string; number: number; steps: number; policyIds: string[];
+  outcome?: Outcome; finalState?: State; stopReason?: EpisodeStopReason;
+}
 interface Window<State> {
   before: State; after: State; steps: number; elapsedMs: number; samples: unknown[];
   usageStart: PlayerModelRunner["usage"];
 }
 interface Feedback<State> {
-  policyId: string; reason: string; before: State; after: State; steps: number; elapsedMs: number;
+  episodeId?: string; policyId: string; reason: string; before: State; after: State; steps: number; elapsedMs: number;
   start: Outcome; end: Outcome; progress: number; comparisonKey?: string; milestone?: string; setback?: string; error?: string;
   usage: PlayerModelRunner["usage"]; trajectory: unknown[];
   failedDecision?: { state: State; judgments: unknown };
@@ -26,6 +31,7 @@ interface LearningCheckpoint<State> {
   trial?: { previous: PlayerPolicy; reference: Feedback<State>; hypothesis: string };
   history: unknown[]; tried: string[]; usage: PlayerModelRunner["usage"];
   terminal: boolean;
+  episode?: EpisodeRecord<State>;
   controller?: PlayerControllerState<State>;
 }
 export interface ContinualOptions<State, Action> {
@@ -53,6 +59,7 @@ export class ContinualLearningSession<State, Action> {
   private boundaryAt = performance.now();
   private readonly onAbort = () => this.stop();
   private closed = false;
+  private failure?: unknown;
   private seed: number;
 
   private constructor(private readonly options: ContinualOptions<State, Action>) {
@@ -66,7 +73,7 @@ export class ContinualLearningSession<State, Action> {
   static async open<State, Action>(options: ContinualOptions<State, Action>): Promise<ContinualLearningSession<State, Action>> {
     const session = new ContinualLearningSession(options);
     try { await session.open(); return session; }
-    catch (error) { await session.finish(); throw error; }
+    catch (error) { await session.finish(options.signal.aborted ? "interrupted" : "error"); throw error; }
   }
 
   get steps() { return this.checkpoint.steps; }
@@ -149,12 +156,40 @@ export class ContinualLearningSession<State, Action> {
     if (!this.checkpoint.tried.length) this.checkpoint.tried.push(policyId(this.checkpoint.policy));
     await this.savePolicy();
     this.buildRuntime(!!this.options.resume && game.continuity !== "persistent");
-    await this.persist();
-    await this.emit("episode.started", { state: this.state, episode: this.episodes + 1, policyId: policyId(this.checkpoint.policy) });
+    await this.startEpisode(!!this.options.resume && game.continuity === "persistent");
     await this.emit(this.options.resume ? "learning.resumed" : "learning.started", {
       directory: this.directory, goal: game.goal, policyId: policyId(this.checkpoint.policy),
       reviewControl: "model",
     });
+  }
+
+  private async startEpisode(reconnect = false) {
+    const resumed = reconnect && !!this.checkpoint.episode;
+    if (!resumed) this.checkpoint.episode = { id: randomUUID(), number: this.episodes + 1,
+      steps: 0, policyIds: [policyId(this.checkpoint.policy!)] };
+    const episode = this.checkpoint.episode!;
+    delete episode.stopReason;
+    await this.persist();
+    await this.emit(reconnect ? "episode.resumed" : "episode.started", {
+      episodeId: episode.id, episode: episode.number, steps: episode.steps,
+      state: this.state, policyId: policyId(this.checkpoint.policy!), policyIds: episode.policyIds });
+    await this.recordOutcome(this.state);
+  }
+
+  /** Record bridge-owned results before any optional model review can fail or be interrupted. */
+  private async recordOutcome(state: State) {
+    const episode = this.checkpoint.episode;
+    const outcome = this.options.game.outcome(state);
+    this.checkpoint.terminal = outcome.done;
+    if (!episode || episode.outcome?.done) return;
+    episode.outcome = outcome;
+    if (!outcome.done) return;
+    episode.finalState = structuredClone(state);
+    this.checkpoint.episodes++;
+    await this.persist();
+    await this.emit("episode.completed", { episodeId: episode.id, episode: episode.number,
+      steps: episode.steps, policyIds: episode.policyIds, outcome, finalState: state,
+      stopReason: outcome.won ? "won" : "game-over" });
   }
 
   private buildRuntime(newEpisode = false) {
@@ -188,6 +223,7 @@ export class ContinualLearningSession<State, Action> {
       if (this.done) throw new Error("The current game is terminal");
       this.judgments = {};
       this.decisionError = undefined;
+      const actingPolicy = policyId(this.checkpoint.policy!);
       let result: StepResult<State, Action>;
       try { result = await this.runtime.step(); }
       catch (error) {
@@ -203,21 +239,27 @@ export class ContinualLearningSession<State, Action> {
         }
         return { before };
       }
-      signal.throwIfAborted();
       const observation = result.after ?? await this.adapter.observe();
       const window = this.checkpoint.window!;
       window.after = structuredClone(observation.state);
-      if (result.candidate) { window.steps++; this.checkpoint.steps++; }
+      if (result.candidate) {
+        window.steps++; this.checkpoint.steps++;
+        const episode = this.checkpoint.episode!;
+        episode.steps++;
+        if (!episode.policyIds.includes(actingPolicy)) episode.policyIds.push(actingPolicy);
+      }
       window.elapsedMs += performance.now() - this.boundaryAt;
       this.boundaryAt = performance.now();
       const outcome = this.options.game.outcome(window.after);
-      const transition = { step: this.checkpoint.steps, before: result.before.state, action: result.candidate?.action,
+      const transition = { episodeId: this.checkpoint.episode!.id, policyId: actingPolicy,
+        step: this.checkpoint.steps, before: result.before.state, action: result.candidate?.action,
         after: observation.state, outcome, verification: result.verification, judgments: this.judgments };
       window.samples.push(structuredClone(transition));
       if (window.samples.length > 12) window.samples.splice(4, 1);
-      if (outcome.done) { this.checkpoint.episodes++; this.checkpoint.terminal = true; }
       await this.persist();
       await this.emit("episode.step", transition);
+      await this.recordOutcome(observation.state);
+      signal.throwIfAborted();
       // Every outcome reaches the cheap observer. Only its model-authored conditions may wake Sol.
       await this.superviseObservation(outcome.done ? outcome.won ? "won" : "game-over"
         : !result.candidate ? "blocked" : "outcome", result.verification,
@@ -240,14 +282,14 @@ export class ContinualLearningSession<State, Action> {
       this.startWindow((await this.adapter.observe()).state);
       this.checkpoint.terminal = this.options.game.outcome(this.state).done;
       this.buildRuntime(true);
-      await this.persist();
-      await this.emit("episode.started", { state: this.state, episode: this.episodes + 1, policyId: policyId(this.checkpoint.policy!) });
+      await this.startEpisode();
     });
   }
 
   private async superviseObservation(reason: string, verification?: Verification, error?: string): Promise<boolean> {
     const observation = await this.adapter.observe();
     this.checkpoint.window!.after = structuredClone(observation.state);
+    await this.recordOutcome(observation.state);
     const context = { observation, sequence: this.steps, authority: this.runtime.getAuthority(),
       lastVerification: verification, signals: this.signals };
     context.signals = await this.adapter.signals?.(context) ?? {};
@@ -267,15 +309,29 @@ export class ContinualLearningSession<State, Action> {
   }
 
   stop(): void { this.controller.abort(); this.runtime?.stop(); }
-  async finish(): Promise<void> {
+  async finish(reason?: EpisodeStopReason): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    reason ??= this.controller.signal.aborted ? "interrupted"
+      : this.failure instanceof ModelBudgetExceeded ? "budget" : this.failure ? "error" : "stopped";
     this.stop();
     await this.queue;
     await this.runtime?.finish();
     this.options.signal.removeEventListener("abort", this.onAbort);
     try {
       if (this.checkpoint.policy) {
+        if (this.checkpoint.episode) {
+          await this.recordOutcome(this.state);
+          if (!this.done) {
+            this.checkpoint.episode.stopReason = reason;
+            this.checkpoint.episode.finalState = structuredClone(this.state);
+            await this.persist();
+            await this.emit("episode.stopped", { episodeId: this.checkpoint.episode.id,
+              episode: this.checkpoint.episode.number, steps: this.checkpoint.episode.steps,
+              policyIds: this.checkpoint.episode.policyIds, outcome: this.checkpoint.episode.outcome,
+              finalState: this.state, stopReason: reason });
+          }
+        }
         await this.persist();
         await this.emit("learning.saved", { directory: this.directory, policyPath: this.policyPath, steps: this.steps,
           reviews: this.reviews, policyStatus: this.policyStatus, terminal: this.done, pendingReview: !!this.checkpoint.pending });
@@ -299,7 +355,7 @@ export class ContinualLearningSession<State, Action> {
       usage[key] -= window.usageStart[key];
       for (const role of ["strategist", "tactician", "reflex"] as const) usage.roles[role][key] -= window.usageStart.roles[role][key];
     }
-    const feedback: Feedback<State> = { policyId: policyId(this.checkpoint.policy!), reason,
+    const feedback: Feedback<State> = { episodeId: this.checkpoint.episode?.id, policyId: policyId(this.checkpoint.policy!), reason,
       before: window.before, after: window.after, steps: window.steps, elapsedMs: window.elapsedMs,
       start, end, progress: assessment?.progress ?? end.score - start.score, comparisonKey: assessment?.comparisonKey,
       milestone: assessment?.milestone, setback: assessment?.setback,
@@ -379,8 +435,7 @@ export class ContinualLearningSession<State, Action> {
       this.checkpoint.reviews++;
       this.checkpoint.pending = undefined;
       this.startWindow(observed);
-      if (!this.checkpoint.terminal && game.outcome(observed).done) this.checkpoint.episodes++;
-      this.checkpoint.terminal = game.outcome(observed).done;
+      await this.recordOutcome(observed);
       await this.savePolicy();
       await this.persist();
       for (const event of events) await this.emit(event.type, event.detail);
@@ -409,7 +464,7 @@ export class ContinualLearningSession<State, Action> {
   }
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     const result = this.queue.then(work);
-    this.queue = result.then(() => undefined, () => undefined);
+    this.queue = result.then(() => { this.failure = undefined; }, error => { this.failure = error; });
     return result;
   }
 }
@@ -428,6 +483,7 @@ export async function runContinualLearning<State, Action>(options: ContinualOpti
   const session = await ContinualLearningSession.open({ ...options,
     limits: { maxSteps: options.maxSteps, maxReviews: options.maxReviews, maxGames: options.maxGames } });
   let episodeStart = session.steps;
+  let stopReason: EpisodeStopReason = "limit";
   try {
     while (!options.signal.aborted && (options.maxSteps === undefined || session.steps < options.maxSteps) &&
       (options.maxReviews === undefined || session.reviews < options.maxReviews) &&
@@ -445,5 +501,8 @@ export async function runContinualLearning<State, Action>(options: ContinualOpti
     await writeFile(join(session.directory, "result.json"), JSON.stringify(result, null, 2) + "\n");
     await options.report?.({ type: "learning.completed", detail: result });
     return result;
-  } finally { await session.finish(); }
+  } catch (error) {
+    stopReason = error instanceof ModelBudgetExceeded ? "budget" : "error";
+    throw error;
+  } finally { await session.finish(options.signal.aborted ? "interrupted" : stopReason); }
 }
