@@ -6,7 +6,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const installed = join(root, "node_modules", "@gamebot");
+const nodeModules = join(root, "node_modules");
+const installed = join(nodeModules, "@gamebot");
 const games = new Map();
 for (const id of await readdir(installed)) {
   const directory = join(installed, id);
@@ -51,8 +52,11 @@ if (!id || args.includes("--help") || args.includes("--list")) {
       if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path) || built.has(manifest.name)) return 0;
       built.add(manifest.name);
       const dependencies = { ...manifest.dependencies, ...manifest.peerDependencies, ...manifest.devDependencies };
-      for (const name of Object.keys(dependencies).filter(name => name.startsWith("@gamebot/") && name !== "@gamebot/core")) {
-        const dependency = join(installed, name.slice("@gamebot/".length));
+      for (const name of Object.keys(dependencies).filter(name => name !== "@gamebot/core")) {
+        const dependency = join(nodeModules, name);
+        if (!existsSync(dependency)) continue;
+        const dependencyPath = relative(workspaceRoot, await realpath(dependency));
+        if (dependencyPath === ".." || dependencyPath.startsWith(`..${sep}`) || isAbsolute(dependencyPath)) continue;
         const dependencyManifest = JSON.parse(await readFile(join(dependency, "package.json"), "utf8"));
         const code = await buildWorkspace(dependency, dependencyManifest);
         if (code !== 0) return code;

@@ -1,6 +1,6 @@
 # @gamebot/snake
 
-Seeded real-time Snake bridge for `@gamebot/core`. A separate Node process owns the native rules, clock, and browser window; the GameBot adapter only reads state and submits direction inputs. Snake plays until collision or a full board. The objective is to grow as long as possible without colliding; filling the board wins. There is no artificial food cutoff.
+GameBot bridge for the independent [snake-game](../snake-game) package. Snake owns its rules, clock, and browser window, and can be played without GameBot. This bridge launches it in a separate process, reads observations, submits direction inputs, and optionally annotates its window with GameBot's strategy and tactic. Snake plays until collision or a full board. The objective is to grow as long as possible without colliding; filling the board wins. There is no artificial food cutoff.
 
 After [configuring the three models](../../docs/learning.md):
 
@@ -10,7 +10,7 @@ npm run autoplay -- --game=snake --fresh --rounds=5 --games=3
 npm run game -- --game=snake --policy=latest
 ```
 
-Autoplay also opens a live browser view by default, following the actual research attempts and strategy/tactic updates; `--headless` opts out.
+Autoplay also opens the native game's live browser view by default, including strategy/tactic annotations from the bridge; `--headless` opts out.
 
 The first direction input starts the game. Once running, the snake advances every 120 ms, continuing in its last direction whenever no fresh direction arrives. Models cannot pause it. Even suspending or blocking the agent process leaves game physics and browser updates running. The viewer uses native game state, so delayed agent receipts cannot rewind the board. Headless play uses the same clock. `--pace=200` sets a 200 ms game tick; it must be positive and does not add a delay after each decision.
 

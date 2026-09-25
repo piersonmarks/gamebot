@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import type { LearningEvent } from "@gamebot/core";
 import { SnakeGame } from "./game.js";
+const gameProcess = import.meta.resolve("snake-game/process");
 
 /** Owns the native game application, separately from any agent/controller session. */
 export class SnakeSession {
@@ -12,6 +13,7 @@ export class SnakeSession {
   url?: string;
   onClose?: () => void;
   private notified = false;
+  private readonly activeModels = new Map<string, number>();
 
   constructor(readonly tickIntervalMs = 120) {
     if (!Number.isSafeInteger(tickIntervalMs) || tickIntervalMs < 1) throw new Error("Snake --pace must be a positive tick interval in milliseconds");
@@ -21,7 +23,7 @@ export class SnakeSession {
     if (this.closing) return Promise.reject(new Error("Snake window is closed"));
     return this.opening ??= new Promise<void>((resolve, reject) => {
       let ready = false;
-      const child = this.child = fork(new URL("./process.js", import.meta.url), [String(this.tickIntervalMs), String(headless)],
+      const child = this.child = fork(new URL(gameProcess), [String(this.tickIntervalMs), String(headless)],
         { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], execArgv: [] });
       const failed = (error: Error) => {
         reject(error);
@@ -73,16 +75,47 @@ export class SnakeSession {
     });
   }
 
-  /** Send presentation metadata only; never send a board from an agent receipt. */
+  /** Translate GameBot events into optional labels understood by the independent game. */
   report(event: LearningEvent): void {
     if (!this.child?.connected) return;
-    if (!/^(model\.(started|completed|failed)|episode\.(started|resumed|step|completed)|player\.initialized|strategy\.updated|tactic\.updated|supervision\.applied|learning\.(window|proposal|policy-activated|trial-reviewed|reviewed|saved)|research\.(setup|proposal|revision|completed|error))$/.test(event.type)) return;
     const envelope = event.detail as Record<string, any>;
     const source = envelope.event ?? envelope;
-    const detail = Object.fromEntries(["role", "episode", "strategy", "instruction", "step", "steps", "action", "stopReason", "error", "reason", "progress", "retained", "round", "accepted", "message"]
-      .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
-    if (source.policy) detail.policy = { strategy: source.policy.strategy };
-    this.child.send({ type: "report", event: { type: event.type, detail } }, () => {});
+    const presentation: Record<string, string> = {};
+    switch (event.type) {
+      case "model.started":
+      case "model.completed":
+      case "model.failed": {
+        const role = String(source.role ?? "model");
+        this.activeModels.set(role, Math.max(0, (this.activeModels.get(role) ?? 0) + (event.type === "model.started" ? 1 : -1)));
+        const thinking = [...this.activeModels].filter(([, count]) => count > 0).map(([name]) => name + " thinking");
+        presentation.phase = thinking.length ? thinking.join(" · ") : "Playing";
+        break;
+      }
+      case "player.initialized": presentation.strategy = String(source.policy?.strategy ?? ""); break;
+      case "strategy.updated": presentation.strategy = String(source.strategy ?? ""); break;
+      case "tactic.updated": presentation.tactic = String(source.instruction ?? ""); break;
+      case "supervision.applied":
+        presentation.strategy = String(source.strategy ?? "");
+        presentation.tactic = String(source.instruction ?? "");
+        break;
+      case "episode.started":
+      case "episode.resumed": presentation.phase = "Playing"; presentation.action = ""; break;
+      case "episode.step": presentation.action = `Move ${source.step}: ${JSON.stringify(source.action)}`; break;
+      case "episode.completed": presentation.phase = source.error ? `Attempt failed: ${source.error}` : `Attempt finished: ${source.stopReason}`; break;
+      case "learning.window": presentation.phase = `Reviewing: ${source.reason}`; break;
+      case "learning.proposal": presentation.phase = "Checking a proposed revision"; break;
+      case "learning.policy-activated": presentation.phase = "Trying a revised player"; break;
+      case "learning.trial-reviewed": presentation.phase = source.retained ? "Retaining the live trial" : "Restoring the previous player"; break;
+      case "learning.reviewed": presentation.phase = "Playing"; break;
+      case "learning.saved": presentation.phase = "Learning saved"; break;
+      case "research.setup": presentation.phase = "Planning the first attempt"; break;
+      case "research.proposal": presentation.phase = `Testing revision ${source.round}`; break;
+      case "research.revision": presentation.phase = source.accepted ? "Improved policy accepted" : "Keeping the previous policy"; break;
+      case "research.completed": presentation.phase = "Research complete"; break;
+      case "research.error": presentation.phase = `Research stopped: ${source.message}`; break;
+      default: return;
+    }
+    this.child.send({ type: "present", presentation }, () => {});
   }
 
   close(): Promise<void> {
