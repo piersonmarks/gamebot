@@ -38,7 +38,7 @@ export async function preflightPolicy<State, Action>(game: LearningGame<State, A
         if (policy.code) {
           const decision = await runPolicyDecision(policy.code, { ...input, reviewCompleted: repeat === 1 }, signal);
           if (repeat === 1 && decision.review) throw new Error("Program requests another review after reviewCompleted");
-          if (!decision.review && (decision.candidateId === null ? policy.kind === "code"
+          if ((!decision.review || game.realtime) && (decision.candidateId === null ? policy.kind === "code"
             : !candidates.some(candidate => candidate.id === decision.candidateId))) throw new Error("Program returned no legal offered action");
         }
         if (policy.jev) {

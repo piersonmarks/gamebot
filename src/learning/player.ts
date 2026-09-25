@@ -20,7 +20,7 @@ Start with an AI action policy (kind ai, code null, jev null), plus an observer 
 Collect gameplay evidence before proposing action-selection code or custom Jev questions. The observer only monitors evidence.
 ${observerContract}
 The goal defines success; do not assume it is attainable. No built-in solution or examples are supplied.`, {
-    rules: game.rules, goal: game.goal, evaluation: game.evaluation, observation,
+    rules: game.rules, realtime: !!game.realtime, goal: game.goal, evaluation: game.evaluation, observation,
   }, signal);
   if (plan.policy.kind !== "ai" || plan.policy.jev !== null) throw new Error("Initial player must be AI-first with default Jev questions");
   await report?.({ type: "player.initialized", detail: plan });
@@ -50,6 +50,13 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
   private baseline?: PlayerControllerState<State>["baseline"];
   private goalRevision?: number;
   private recent: unknown[] = [];
+  private generation = 0;
+  private review?: {
+    controller: AbortController; task: Promise<void>; settled: boolean; generation: number;
+    context: DecisionContext<State>;
+    result?: { state: PlayerControllerState<State>; immediateAction: string | null; request?: LearningReviewRequested };
+    error?: unknown;
+  };
 
   constructor(private readonly options: {
     game: LearningGame<State, Action>;
@@ -58,7 +65,7 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
     controller?: PlayerControllerState<State>;
     reflex?: Reflex<State, Action>;
     report?: LearningReporter;
-    learning?: { evidence(): unknown };
+    learning?: { evidence(): unknown; busy?(): boolean };
   }) {
     this.policy = options.policy && playerPolicySchema.parse(options.policy);
     this.observer = this.policy?.observer ?? undefined;
@@ -79,7 +86,15 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
       observer: this.observer, baseline: this.baseline, recent: this.recent });
   }
 
+  get isReviewing(): boolean { return !!this.review || !!this.options.learning?.busy?.(); }
+
+  stop(): void { this.review?.controller.abort(); }
+
+  async finish(): Promise<void> { this.stop(); await this.review?.task; }
+
   replacePolicy(policy: PlayerPolicy): void {
+    this.generation++;
+    this.stop();
     this.policy = playerPolicySchema.parse(policy);
     this.strategy = this.policy.strategy;
     this.tactic = undefined;
@@ -90,6 +105,8 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
   private async prepare(context: DecisionContext<State>, signal: AbortSignal) {
     signal.throwIfAborted();
     if (this.goalRevision !== undefined && this.goalRevision !== context.authority.goalRevision) {
+      this.generation++;
+      this.stop();
       this.policy = undefined;
       this.recent = [];
       this.strategy = this.tactic = this.observer = undefined;
@@ -106,17 +123,94 @@ export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> 
   /** Also consumes terminal, unavailable-action and error observations without asking Jev for a move. */
   async supervise(context: DecisionContext<State>, signal: AbortSignal, detail?: unknown): Promise<{ reviewed: boolean; immediateAction: string | null }> {
     await this.prepare(context, signal);
-    const evidence = {
-      rules: this.options.game.rules, evaluation: this.options.game.evaluation, authority: context.authority,
+    const completed = await this.acceptReview(context, signal);
+    if (completed && !this.options.game.outcome(context.observation.state).done) return completed;
+    const evidence = this.evidence(context, detail);
+    const attention = this.observer ? await runObserver(this.observer, evidence, signal)
+      : { wake: true, reason: "Initialize monitoring for a legacy policy without an observer" };
+    await this.options.report?.({ type: "observer.decision", detail: { ...attention, reviewPending: this.isReviewing } });
+    signal.throwIfAborted();
+    if (!attention.wake || this.review || this.options.learning?.busy?.()) return { reviewed: false, immediateAction: null };
+    if (!this.options.game.realtime || evidence.outcome.done) return this.reviewNow(context, signal, evidence, attention);
+
+    // A draft owns the model's mutations. The live player changes only at decision boundaries.
+    const draft = new HierarchicalPlayer({ ...this.options, policy: this.policy, controller: this.snapshot(),
+      report: event => this.options.report?.({ ...event,
+        type: ["observer.configured", "tactic.updated", "strategy.updated"].includes(event.type) ? `supervision.proposed.${event.type}` : event.type }),
+    });
+    const work: NonNullable<HierarchicalPlayer<State, Action>["review"]> = {
+      controller: new AbortController(), task: Promise.resolve(), settled: false, generation: this.generation, context: structuredClone(context),
+    };
+    this.review = work;
+    work.task = (async () => {
+      try {
+        let result: { immediateAction: string | null } = { immediateAction: null };
+        let request: LearningReviewRequested | undefined;
+        try { result = await draft.reviewNow(work.context, work.controller.signal, structuredClone(evidence), attention); }
+        catch (error) { if (error instanceof LearningReviewRequested) request = error; else throw error; }
+        work.controller.signal.throwIfAborted();
+        work.result = { state: draft.snapshot()!, immediateAction: result.immediateAction, request };
+      } catch (error) { if (!work.controller.signal.aborted) work.error = error; }
+      finally { work.settled = true; }
+    })();
+    return { reviewed: false, immediateAction: null };
+  }
+
+  private async acceptReview(context: DecisionContext<State>, signal: AbortSignal) {
+    const work = this.review;
+    if (!work) return;
+    if (work.generation !== this.generation ||
+        work.context.authority.goalRevision !== context.authority.goalRevision ||
+        work.context.authority.directiveRevision !== context.authority.directiveRevision) {
+      work.controller.abort();
+    }
+    // No live controls are waiting once the game is terminal. Settle requested work before restarting.
+    if (this.options.game.outcome(context.observation.state).done) await work.task;
+    if (!work.settled) return;
+    if (work.controller.signal.aborted) {
+      this.review = undefined;
+      await this.options.report?.({ type: "supervision.discarded", detail: {
+        reason: "The policy or authority changed before the review was applied", sourceRevision: work.context.observation.revision,
+      } });
+      return;
+    }
+    this.review = undefined;
+    if (work.error !== undefined) throw work.error;
+    const result = work.result!;
+    signal.throwIfAborted();
+    // Check the replacement monitor on current evidence before installing the draft.
+    if (result.state.observer) await runObserver(result.state.observer, {
+      ...this.evidence(context), strategy: result.state.strategy, tactic: result.state.tactic, baseline: result.state.baseline,
+    }, signal);
+    this.strategy = result.state.strategy;
+    this.tactic = result.state.tactic;
+    this.observer = result.state.observer;
+    this.baseline = result.state.baseline;
+    const sameDecision = work.context.sequence === context.sequence &&
+      work.context.observation.revision !== undefined && work.context.observation.revision === context.observation.revision;
+    const immediateAction = sameDecision ? result.immediateAction : null;
+    await this.options.report?.({ type: "supervision.applied", detail: {
+      strategy: this.strategy, instruction: this.tactic, sourceRevision: work.context.observation.revision,
+      currentRevision: context.observation.revision, immediateAction,
+      discardedImmediateAction: result.immediateAction !== null && !sameDecision,
+    } });
+    if (result.request) throw result.request;
+    return { reviewed: true, immediateAction };
+  }
+
+  private evidence(context: DecisionContext<State>, detail?: unknown) {
+    return {
+      rules: this.options.game.rules, realtime: !!this.options.game.realtime, evaluation: this.options.game.evaluation, authority: context.authority,
       observation: context.observation, outcome: this.options.game.outcome(context.observation.state),
       signals: context.signals, lastVerification: context.lastVerification, recent: this.recent, detail,
+      supervisionPending: this.isReviewing, modelUsage: this.options.models.usage,
       learningAvailable: !!this.options.learning, learning: this.options.learning?.evidence(),
       strategy: this.strategy, tactic: this.tactic ?? this.policy!.tactics, baseline: this.baseline,
     };
-    const attention = this.observer ? await runObserver(this.observer, evidence, signal)
-      : { wake: true, reason: "Initialize monitoring for a legacy policy without an observer" };
-    await this.options.report?.({ type: "observer.decision", detail: attention });
-    if (!attention.wake) return { reviewed: false, immediateAction: null };
+  }
+
+  private async reviewNow(context: DecisionContext<State>, signal: AbortSignal,
+    evidence: ReturnType<HierarchicalPlayer<State, Action>["evidence"]>, attention: { wake: boolean; reason: string }) {
     const adoptObserver = async (replacement: string | null, tactic: string) => {
       const source = replacement ?? this.observer;
       if (!source) throw new ObserverError("A player without monitoring requires observer source, not null");
@@ -135,6 +229,8 @@ You decide whether to continue, adjust tactics, ask the strategist for a new pla
 Game signals, milestones, setbacks, elapsed time and terminal outcomes are evidence, never automatic review triggers.
 Do not invent fixed check-in intervals. Request help when the evidence warrants it, including opportunities to improve efficiency after success.
 Use instruction for a lasting objective and immediateAction only for advice about this decision.
+In real-time games your review runs alongside reflex control. Its observation is a snapshot that can age while you think.
+Prefer durable objectives the reflex can evaluate against fresh state; old one-move advice will be discarded. Weigh latency against useful intelligence.
 When detail has no candidates (an outcome-only observation), return immediateAction=null; express future guidance in instruction.
 If learningAvailable is false, learning is disabled for this replay/benchmark: choose none or strategist.
 If strategyReviewed is true, use the updated strategy or request learning; do not request the strategist again for the same observation.
@@ -175,8 +271,9 @@ Preserve the user goal. Do not claim to execute code in this planning response.`
     await this.prepare(context, signal);
     let immediateAction: string | null = null;
     const input = (reviewCompleted = false) => ({
-      state: context.observation.state, candidates, goal: context.authority.goal, directive: context.authority.directive,
+      state: context.observation.state, realtime: !!this.options.game.realtime, candidates, goal: context.authority.goal, directive: context.authority.directive,
       strategy: this.strategy, tactic: this.tactic ?? this.policy!.tactics, immediateAction,
+      supervisionPending: this.isReviewing,
       // Do not feed full judgment requests back into later requests recursively.
       recent: this.recent.map(item => { const { judgments, ...decision } = item as Record<string, unknown>; return decision; }),
       signals: context.signals, lastVerification: context.lastVerification, reviewCompleted,

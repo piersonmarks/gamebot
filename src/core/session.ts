@@ -197,6 +197,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   stop(): void {
     this.stopped = true;
     this.cancelReasoning();
+    this.options.reflex?.stop?.();
     this.reflexDecision?.abort();
     this.execution?.abort();
     this.cancelSkill("session stopped");
@@ -206,7 +207,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   async finish(): Promise<void> {
     this.stop();
     await this.queue;
-    await Promise.all([...this.background, ...this.cancellations]);
+    await Promise.all([...this.background, ...this.cancellations, this.options.reflex?.finish?.()]);
     await this.queue;
     this.disposal ??= Promise.resolve().then(() => this.options.adapter.dispose?.());
     await this.disposal;

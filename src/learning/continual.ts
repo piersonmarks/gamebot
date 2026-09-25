@@ -42,7 +42,7 @@ export interface ContinualOptions<State, Action> {
   resume?: string; setupEvents?: LearningEvent[]; report?: LearningReporter; trace?: TraceSink;
 }
 
-/** One world and one learning cycle. Reviews run between actions and never reset the world. */
+/** One world and one learning cycle. Real-time reviews run alongside actions and never reset the world. */
 export class ContinualLearningSession<State, Action> {
   readonly directory: string;
   private checkpoint: LearningCheckpoint<State>;
@@ -53,6 +53,12 @@ export class ContinualLearningSession<State, Action> {
   private readonly controller = new AbortController();
   private readonly originalReporter: LearningReporter | undefined;
   private phase = "gameplay";
+  private writes: Promise<void> = Promise.resolve();
+  private revisionWork?: {
+    task: Promise<void>;
+    result?: { proposal: Revision; preflight?: Awaited<ReturnType<typeof preflightPolicy>> };
+    error?: unknown;
+  };
   private decisionError?: unknown;
   private signals: Signals = {};
   private judgments: Record<string, unknown> = {};
@@ -198,17 +204,18 @@ export class ContinualLearningSession<State, Action> {
       this.checkpoint.controller = { ...this.checkpoint.controller, baseline: undefined, recent: [], tactic: undefined };
     }
     this.player = new HierarchicalPlayer({ game, models, policy: this.checkpoint.policy, controller: this.checkpoint.controller,
-      learning: { evidence: () => ({ window: this.describeWindow("observation"), trial: this.checkpoint.trial,
+      learning: { busy: () => !!this.checkpoint.pending, evidence: () => ({ window: this.describeWindow("observation"), trial: this.checkpoint.trial,
         history: this.checkpoint.history.slice(-6) }) }, report: async event => {
       if (event.type.startsWith("reflex.")) this.judgments[event.type.slice(7)] = event.detail;
       await this.emit(event.type, event.detail);
     } });
     this.runtime = new SessionRuntime({ adapter: this.adapter, candidates: game.candidates, verifier: game.verifier,
-      reflex: { choose: async (context, candidates, signal) => {
-        this.checkpoint.window!.after = structuredClone(context.observation.state);
-        try { return await this.player.choose(context, candidates, signal); }
-        catch (error) { this.decisionError = error; throw error; }
-      } }, trace: { record: async event => {
+      reflex: { stop: () => this.player.stop(), finish: () => this.player.finish(),
+        choose: async (context, candidates, signal) => {
+          this.checkpoint.window!.after = structuredClone(context.observation.state);
+          try { return await this.player.choose(context, candidates, signal); }
+          catch (error) { this.decisionError = error; throw error; }
+        } }, trace: { record: async event => {
         if (event.type === "observation") this.signals = (event.detail as { signals: Signals }).signals;
         await this.options.trace?.record(event);
         await this.emit(`runtime.${event.type}`, event);
@@ -220,7 +227,10 @@ export class ContinualLearningSession<State, Action> {
       const signal = this.controller.signal;
       signal.throwIfAborted();
       await this.reviewPending();
-      if (this.done) throw new Error("The current game is terminal");
+      if (this.done) {
+        if (this.options.game.realtime) return { before: await this.adapter.observe() };
+        throw new Error("The current game is terminal");
+      }
       this.judgments = {};
       this.decisionError = undefined;
       const actingPolicy = policyId(this.checkpoint.policy!);
@@ -265,6 +275,7 @@ export class ContinualLearningSession<State, Action> {
         : !result.candidate ? "blocked" : "outcome", result.verification,
         result.verification?.status === "unknown" || result.verification?.status === "failure"
           ? result.verification.reason ?? "Unverified action" : undefined);
+      if (this.done) await this.reviewPending();
       await this.persist();
       return result;
     });
@@ -295,7 +306,8 @@ export class ContinualLearningSession<State, Action> {
     context.signals = await this.adapter.signals?.(context) ?? {};
     try {
       await this.player.supervise(context, this.controller.signal, { reason, error, judgments: this.judgments });
-      return false;
+      // A requested review can repair a failing policy while the world keeps running.
+      return this.player.isReviewing;
     } catch (request) {
       if (!(request instanceof LearningReviewRequested)) throw request;
       await this.closeWindow(request, error);
@@ -317,6 +329,7 @@ export class ContinualLearningSession<State, Action> {
     this.stop();
     await this.queue;
     await this.runtime?.finish();
+    await this.revisionWork?.task;
     if (this.options.game.realtime && this.adapter && this.checkpoint.window) {
       try { this.checkpoint.window.after = (await this.adapter.observe()).state; }
       catch (error) { await this.emit("learning.observation-error", { error: String(error) }); }
@@ -370,7 +383,8 @@ export class ContinualLearningSession<State, Action> {
   }
 
   private async closeWindow(request: LearningReviewRequested, error?: string) {
-    const feedback = this.describeWindow(request.message, error);
+    if (this.checkpoint.pending) return;
+    const feedback = structuredClone(this.describeWindow(request.message, error));
     this.checkpoint.pending = { feedback, requestedBy: request.requestedBy };
     await this.persist();
     await this.emit("learning.window", { ...feedback, requestedBy: request.requestedBy });
@@ -383,17 +397,41 @@ export class ContinualLearningSession<State, Action> {
     const { game, models } = this.options;
     const signal = this.controller.signal;
     signal.throwIfAborted();
-    this.phase = "learning";
-    try {
-      const proposal = pending.proposal ?? await proposeRevision(models, {
-        mode: "continual", rules: game.rules, goal: game.goal, evaluation: game.evaluation,
+    if (!game.realtime) this.phase = "learning";
+    if (!this.revisionWork) {
+      const work: NonNullable<ContinualLearningSession<State, Action>["revisionWork"]> = { task: Promise.resolve() };
+      this.revisionWork = work;
+      const input = structuredClone({
+        mode: "continual", rules: game.rules, realtime: !!game.realtime, goal: game.goal, evaluation: game.evaluation,
         currentPolicy: this.checkpoint.policy, controller: this.player.snapshot(), training: { results: [pending.feedback] },
         trial: this.checkpoint.trial, history: this.checkpoint.history.slice(-6), tried: this.checkpoint.tried,
         round: this.reviews + 1, budget: { remainingModelCalls: models.maxCalls - models.usage.calls },
-      }, signal);
-      pending.proposal = proposal;
-      await this.persist();
-      await this.emit("learning.proposal", proposal);
+      });
+      work.task = (async () => {
+        try {
+          const proposal = pending.proposal ?? await proposeRevision(models, input, signal);
+          signal.throwIfAborted();
+          pending.proposal = proposal;
+          await this.persist();
+          await this.emit("learning.proposal", proposal);
+          let preflight: Awaited<ReturnType<typeof preflightPolicy>> | undefined;
+          if (proposal.policy && !this.checkpoint.tried.includes(policyId(proposal.policy))) {
+            const current = (await this.adapter.observe()).state;
+            preflight = await preflightPolicy(game, proposal.policy,
+              [pending.feedback.before, ...pending.feedback.trajectory.map(item => (item as { before: State }).before), current], signal);
+          }
+          work.result = { proposal, preflight };
+        } catch (error) { work.error = error; }
+      })();
+    }
+    const work = this.revisionWork;
+    if (!game.realtime || this.done) await work.task;
+    if (!work.result && work.error === undefined) return;
+    this.revisionWork = undefined;
+    if (work.error !== undefined) throw work.error;
+    signal.throwIfAborted();
+    const { proposal } = work.result!;
+    try {
       // Stage the revision, then commit it with its receipts. Resume must never assess an old window against a newly activated trial.
       let policy = this.checkpoint.policy!;
       let trial = this.checkpoint.trial;
@@ -413,12 +451,16 @@ export class ContinualLearningSession<State, Action> {
         }
       }
       if (proposal.policy && !this.checkpoint.tried.includes(policyId(proposal.policy))) {
+        preflight = work.result!.preflight;
+        // The world may have advanced during research. Check a playable current state before activation.
         const current = (await this.adapter.observe()).state;
-        const states = [pending.feedback.before, ...pending.feedback.trajectory.map(item => (item as { before: State }).before), current];
-        preflight = await preflightPolicy(game, proposal.policy, states, signal);
+        if (game.realtime && preflight?.passed && !game.outcome(current).done) {
+          const latest = await preflightPolicy(game, proposal.policy, [current], signal);
+          if (!latest.passed) preflight = latest;
+        }
         events.push({ type: "learning.preflight", detail: preflight });
         attemptedId = policyId(proposal.policy);
-        if (preflight.passed) {
+        if (preflight?.passed) {
           // Revising an inconclusive trial retains its original rollback policy.
           trial = { previous: trial?.previous ?? policy, reference: trial?.reference ?? pending.feedback, hypothesis: proposal.hypothesis };
           policy = proposal.policy;
@@ -428,6 +470,9 @@ export class ContinualLearningSession<State, Action> {
       const observed = (await this.adapter.observe()).state;
       signal.throwIfAborted();
       const changed = policyId(policy) !== policyId(this.checkpoint.policy!);
+      if (game.realtime && this.checkpoint.window!.steps > pending.feedback.steps) {
+        this.archiveWindow("played-during-review");
+      }
       this.checkpoint.policy = policy;
       this.checkpoint.trial = trial;
       if (attemptedId) this.checkpoint.tried.push(attemptedId);
@@ -457,10 +502,15 @@ export class ContinualLearningSession<State, Action> {
     if (this.player) this.checkpoint.controller = this.player.snapshot();
     return this.writeJson(join(this.directory, "checkpoint.json"), this.checkpoint);
   }
-  private async writeJson(path: string, value: unknown) {
-    const temporary = `${path}.tmp`;
-    await writeFile(temporary, JSON.stringify(value) + "\n");
-    await rename(temporary, path);
+  private writeJson(path: string, value: unknown): Promise<void> {
+    const contents = JSON.stringify(value) + "\n";
+    const write = this.writes.then(async () => {
+      const temporary = `${path}.tmp`;
+      await writeFile(temporary, contents);
+      await rename(temporary, path);
+    });
+    this.writes = write.catch(() => {});
+    return write;
   }
   private async emit(type: string, detail: unknown) {
     await appendFile(join(this.directory, "runs.jsonl"), JSON.stringify({ time: new Date().toISOString(), type, detail }) + "\n");

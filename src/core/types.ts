@@ -81,6 +81,9 @@ export interface CandidateGenerator<State, Action> {
 }
 
 export interface Reflex<State, Action> {
+  /** Cancel and settle any supervision owned by this player when the session ends. */
+  stop?(): void;
+  finish?(): void | Promise<void>;
   /** Returns only an offered candidate ID. The runtime rejects any other ID. */
   choose(context: DecisionContext<State>, candidates: readonly Candidate<Action>[], signal: AbortSignal): string | Promise<string>;
 }

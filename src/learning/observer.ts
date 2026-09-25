@@ -19,7 +19,9 @@ export async function runObserver(source: string, input: unknown, signal: AbortS
 export const observerContract = `observer is JavaScript source defining function observe(input) returning {wake: boolean, reason: string}.
 It runs cheaply on observations, without a language-model call. It may only request the tactician, never take actions or directly invoke the strategist/researcher.
 You author the conditions for needing attention from game evidence; the harness supplies no thresholds, timers, periodic checks or default failure/terminal triggers.
-Use event/assumption/progress conditions, not fixed check-in intervals. Balance useful supervision against model cost.
+Use event/assumption/progress conditions, not fixed check-in intervals. Balance useful supervision against model cost and response latency.
+In real-time games reflex control continues while higher models think. supervisionPending reports an outstanding review; requests are coalesced while it is pending.
+modelUsage contains call counts and cumulative latencyMs by role; observation may expose game timing and deadlines.
 Input includes observation (with state), outcome {done,won,score}, authority {goal,directive}, rules, evaluation,
 signals, lastVerification, recent decisions with Jev judgment receipts, strategy, tactic, detail, learningAvailable, and learning evidence when available.
 baseline is {observation,outcome} from the last supervision (or the initial observation); compare it with current evidence when useful.

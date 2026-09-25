@@ -15,7 +15,7 @@ export interface LearningGame<State, Action> {
   goal: Goal;
   evaluation?: GoalEvaluation;
   requestedGoal?: string;
-  /** The world advances during inference; presentation pacing must not delay control. */
+  /** The world advances during inference: supervise concurrently and never add presentation delays to control. */
   realtime?: boolean;
   goalOptions?: Record<string, { description: string; objective: "achievement" | "score";
     outcome(state: State): { done: boolean; won: boolean; score: number } }>;
@@ -115,6 +115,7 @@ The tactician decides whether higher reasoning is needed. A program review reque
 There are no scheduled reviews. Legacy tacticianEvery and strategistEvery fields are ignored; set them to null.
 Request a review conditionally using current observations when it can affect your decision. If the observer wakes the tactician, after supervision,
 choose is called once more with updated strategy/tactic and reviewCompleted=true; it must not request another review.
+In real-time games supervision runs in the background; every code invocation must supply an actionable candidate even when requesting review.
 If the observer declines to wake, your original candidateId must be actionable (or null for hybrid AI delegation); a review-only result cannot execute.
 The tactic is a lasting objective; immediateAction is advice valid only for this decision. Code cannot rewrite its own program during play.
 input contains state (the observed game state), candidates (id, description, action), goal, directive, strategy, tactic, and recent decisions.

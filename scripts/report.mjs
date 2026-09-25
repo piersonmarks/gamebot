@@ -151,6 +151,9 @@ async function report(input) {
       if (detail.alternatives?.length) notes.push(`Alternatives: ${detail.alternatives.join("; ")}`);
       if (detail.policy) notes.push(`Proposed ${detail.policy.kind} strategy: ${detail.policy.strategy}`);
     }
+    if (event.type === "supervision.applied") notes.push(`Strategy: ${detail.strategy}`, `Tactic: ${detail.instruction}`,
+      `Review observation: ${detail.sourceRevision}; applied at: ${detail.currentRevision}. Stale immediate advice discarded: ${detail.discardedImmediateAction}.`);
+    if (event.type === "supervision.discarded") notes.push(`Unapplied review: ${detail.reason}`);
     if (event.type === "strategy.updated") notes.push(`Strategy: ${detail.strategy}`, `Reason: ${detail.reason}`);
     if (["learning.policy-activated", "learning.trial-reviewed", "learning.preflight", "research.preflight"].includes(event.type)) notes.push(JSON.stringify(detail));
     if (event.type === "model.failed") notes.push(`Provider failure (${detail.role}): ${detail.error}. Retrying: ${detail.retry}.`);

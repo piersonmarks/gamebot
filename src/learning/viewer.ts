@@ -62,7 +62,7 @@ stream.onerror=()=>{document.getElementById('connection').textContent='Disconnec
 stream.onmessage=({data})=>{
  const view=JSON.parse(data), set=(id,text)=>{document.getElementById(id).textContent=text;};
  if(view.state)renderGame(view.state);
- set('phase',view.phase);set('meta',view.meta||'');set('strategy',view.strategy||'Waiting for the strategist…');
+ set('phase',[view.phase,...(view.thinking||[])].join(' · '));set('meta',view.meta||'');set('strategy',view.strategy||'Waiting for the strategist…');
  set('tactic',view.tactic||'Waiting for the tactician…');set('action',view.action||'No moves yet');
  const history=document.getElementById('history');history.replaceChildren();
  for(const result of view.history){const row=document.createElement('li');row.textContent=result;history.append(row);}
@@ -70,7 +70,8 @@ stream.onmessage=({data})=>{
 </script></body></html>`;
   const clients = new Set<ServerResponse>();
   const view = { phase: "Starting research", meta: "", strategy: "", tactic: "", action: "",
-    state: undefined as unknown, history: [] as string[] };
+    state: undefined as unknown, history: [] as string[], thinking: [] as string[] };
+  const modelCalls = new Map<string, number>();
   let episodes = 0;
   const server = createServer((request, response) => {
     if (request.url === "/") {
@@ -108,8 +109,17 @@ stream.onmessage=({data})=>{
           view.meta = envelope.set === undefined ? `Game ${episodes} · Continual learning` : `Attempt ${episodes} · ${envelope.set === "test" ? "Final evaluation" : envelope.set === "validation" ? "Validation" : "Training"} · seed ${envelope.seed}`;
           break;
         case "episode.step": view.state = detail.after; view.phase = "Playing"; view.action = `Move ${detail.step}: ${JSON.stringify(detail.action)}`; break;
-        case "model.started": view.phase = `${detail.role === "reflex" ? "Choosing a move" : detail.role === "strategist" ? "Strategist is planning" : "Tactician is planning"}…`; break;
+        case "model.started":
+        case "model.completed":
+        case "model.failed": {
+          const role = detail.role ?? "model";
+          modelCalls.set(role, Math.max(0, (modelCalls.get(role) ?? 0) + (event.type === "model.started" ? 1 : -1)));
+          view.thinking = [...modelCalls].filter(([, count]) => count > 0).map(([role]) =>
+            role === "reflex" ? "Jev choosing" : role === "strategist" ? "Strategist thinking" : "Tactician thinking");
+          break;
+        }
         case "player.initialized": view.strategy = detail.policy?.strategy ?? ""; break;
+        case "supervision.applied": view.strategy = detail.strategy ?? ""; view.tactic = detail.instruction ?? ""; break;
         case "strategy.updated": view.strategy = detail.strategy ?? ""; break;
         case "tactic.updated": view.tactic = detail.instruction ?? ""; break;
         case "episode.completed":
