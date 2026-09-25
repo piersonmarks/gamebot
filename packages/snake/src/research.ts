@@ -1,18 +1,17 @@
 #!/usr/bin/env node
-import { learningArgument, runResearchCli, startResearchViewer, openGameWindow } from "@gamebot/core";
+import { learningArgument, runResearchCli, openGameWindow } from "@gamebot/core";
 import { learningSnake } from "./learning.js";
-import { researchViewSnake } from "./viewer.js";
+import { SnakeSession } from "./session.js";
 
-let viewer: Awaited<ReturnType<typeof startResearchViewer>> | undefined;
-const game = learningSnake(Number(learningArgument("target") ?? 5), Number(learningArgument("pace") ?? 120),
-  state => viewer?.report({ type: "game.state", detail: { state } }));
-await runResearchCli(game, {
-  async open({ headless, log }) {
+const world = new SnakeSession(Number(learningArgument("target") ?? 5), Number(learningArgument("pace") ?? 120));
+await runResearchCli(learningSnake(world), {
+  async open({ headless, log, onClose }) {
+    world.onClose = onClose;
+    await world.open(headless);
     if (!headless) {
-      viewer = await startResearchViewer(researchViewSnake);
-      log(`Watch GameBot live at ${viewer.url}`);
-      openGameWindow(viewer.url, log);
+      log(`Watch Snake at ${world.url}. Arrow keys also control the game.`);
+      openGameWindow(world.url!, log);
     }
-    return { report: event => viewer?.report(event), close: async () => { await viewer?.close(); } };
+    return { report: event => world.report(event), close: () => world.close() };
   },
 });

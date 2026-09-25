@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { LearningEvent } from "./models.js";
 
 export interface ResearchViewerOptions {
   title: string;
   /** Trusted bridge code defining renderGame(state), which draws into #board and #game-score. */
   render: string;
+  /** An independent game owns the displayed state; delayed agent receipts cannot rewind it. */
+  currentState?: () => unknown;
+  handleRequest?: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
 }
 
 type ViewerDetail = {
@@ -79,8 +82,13 @@ stream.onmessage=({data})=>{
     } else if (request.url === "/events") {
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       clients.add(response);
+      if (options.currentState) view.state = options.currentState();
       response.write(`data: ${JSON.stringify(view)}\n\n`);
       request.on("close", () => clients.delete(response));
+    } else if (options.handleRequest) {
+      void Promise.resolve().then(() => options.handleRequest!(request, response)).catch(error => {
+        response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: String(error) }));
+      });
     } else response.writeHead(404).end();
   });
   await new Promise<void>((resolve, reject) => {
@@ -90,6 +98,7 @@ stream.onmessage=({data})=>{
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Research viewer did not bind a local port");
   const broadcast = () => {
+    if (options.currentState) view.state = options.currentState();
     const message = `data: ${JSON.stringify(view)}\n\n`;
     for (const client of clients) client.write(message);
   };
