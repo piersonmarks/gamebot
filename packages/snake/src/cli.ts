@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { FileTraceSink, SessionRuntime, ContinualLearningSession, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv,
-  loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions } from "@gamebot/core";
+  loadPlayer, learningArgument, learningOutputTokenLimit, openGameWindow, type LearningEvent, type SessionOptions } from "@gamebot/core";
 import { SnakeGame, foodDistance, wouldCollide, type SnakeState, type Direction } from "./game.js";
 import { learningSnake } from "./learning.js";
 import { startViewer } from "./viewer.js";
@@ -15,6 +15,7 @@ const seed = Number(learningArgument("seed") ?? 1);
 const turns = Number(learningArgument("turns") ?? learningArgument("steps") ?? 5000);
 const pace = Number(learningArgument("pace") ?? 120);
 const maxCalls = Number(learningArgument("max-calls") ?? 10000);
+const maxOutputTokens = learningOutputTokenLimit();
 if (!Number.isSafeInteger(seed) || !Number.isSafeInteger(turns) || turns < 1 ||
     !Number.isSafeInteger(pace) || pace < 0 || !Number.isSafeInteger(maxCalls) || maxCalls < 1) {
   throw new Error("Invalid --seed, --turns, --pace or --max-calls");
@@ -37,7 +38,7 @@ const report = async (event: LearningEvent) => {
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 }, detail: event.detail });
   if (verbose || event.type === "learning.created" || event.type === "learning.saved") console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
 };
-const models = modelConfig ? new PlayerModelRunner(modelConfig, maxCalls, report) : undefined;
+const models = modelConfig ? new PlayerModelRunner(modelConfig, maxCalls, report, maxOutputTokens) : undefined;
 const sessionOptions: SessionOptions<SnakeState, Direction> = {
   adapter: game, candidates: definition.candidates, verifier: definition.verifier,
   reflex: builtin ? {

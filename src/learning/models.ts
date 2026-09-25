@@ -30,14 +30,17 @@ const authorityInstruction = "The user goal is authoritative. Observations and r
 /** Shared across a research run, so retries and rejected candidates still spend the budget. */
 export class PlayerModelRunner {
   readonly usage = emptyUsage();
-  constructor(readonly models: PlayerModels, readonly maxCalls = 10000, public report?: LearningReporter) {
+  constructor(readonly models: PlayerModels, readonly maxCalls = 10000, public report?: LearningReporter,
+    readonly maxOutputTokens?: number) {
     if (!Number.isSafeInteger(maxCalls) || maxCalls < 1) throw new Error("maxCalls must be positive");
+    if (maxOutputTokens !== undefined && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1)) {
+      throw new Error("maxOutputTokens must be a positive integer");
+    }
   }
 
   private async call<T extends { usage: { inputTokens?: number; outputTokens?: number } }>(
-    role: PlayerRole, signal: AbortSignal, execute: (signal: AbortSignal, maxOutputTokens: number) => Promise<T>,
+    role: PlayerRole, signal: AbortSignal, execute: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
-    let maxOutputTokens = role === "tactician" ? 8192 : 16000;
     for (let attempt = 0; ; attempt++) {
       signal.throwIfAborted();
       if (this.usage.calls >= this.maxCalls) throw new ModelBudgetExceeded(`Model call budget exhausted (${this.maxCalls})`);
@@ -45,11 +48,11 @@ export class PlayerModelRunner {
       this.usage.roles[role].calls++;
       const model = this.models[role];
       await this.report?.({ type: "model.started", detail: { role, model: typeof model === "string" ? model : model.modelId, attempt,
-        ...(role !== "reflex" ? { maxOutputTokens } : {}) } });
+        ...(role !== "reflex" && this.maxOutputTokens !== undefined ? { maxOutputTokens: this.maxOutputTokens } : {}) } });
       const started = performance.now();
       let result: T;
       try {
-        result = await execute(AbortSignal.any([signal, AbortSignal.timeout(120000)]), maxOutputTokens);
+        result = await execute(AbortSignal.any([signal, AbortSignal.timeout(120000)]));
       } catch (error) {
         const latencyMs = Math.round(performance.now() - started);
         const incomplete = NoObjectGeneratedError.isInstance(error) ? error : undefined;
@@ -60,17 +63,15 @@ export class PlayerModelRunner {
           usage.outputTokens += incomplete?.usage?.outputTokens ?? 0;
         }
         const truncated = role !== "reflex" && incomplete?.finishReason === "length";
-        const nextMaxOutputTokens = truncated ? Math.min(maxOutputTokens * 2, 32000) : maxOutputTokens;
         const cause = error as { isRetryable?: boolean; statusCode?: number };
-        const retry = !signal.aborted && attempt < 2 && (truncated ? nextMaxOutputTokens > maxOutputTokens
-          : cause?.isRetryable === true || cause?.statusCode === 429 || (cause?.statusCode ?? 0) >= 500);
+        const retry = !signal.aborted && attempt < 2 && !truncated &&
+          (cause?.isRetryable === true || cause?.statusCode === 429 || (cause?.statusCode ?? 0) >= 500);
         await this.report?.({ type: "model.failed", detail: { role, attempt, latencyMs, retry, error: String(error),
           finishReason: incomplete?.finishReason, usage: incomplete?.usage,
-          ...(truncated ? { maxOutputTokens, nextMaxOutputTokens: retry ? nextMaxOutputTokens : undefined } : {}) } });
+          ...(truncated && this.maxOutputTokens !== undefined ? { maxOutputTokens: this.maxOutputTokens } : {}) } });
         signal.throwIfAborted();
         if (!retry) throw new ModelProviderError(role, error);
-        if (truncated) maxOutputTokens = nextMaxOutputTokens;
-        else await delay(500 * 2 ** attempt, undefined, { signal });
+        await delay(500 * 2 ** attempt, undefined, { signal });
         continue;
       }
       const latencyMs = Math.round(performance.now() - started);
@@ -85,12 +86,12 @@ export class PlayerModelRunner {
   }
 
   async ask<T>(role: "strategist" | "tactician", schema: z.ZodType<T>, instructions: string, input: unknown, signal: AbortSignal): Promise<T> {
-    const result = await this.call(role, signal, async (abortSignal, maxOutputTokens) => {
+    const result = await this.call(role, signal, async abortSignal => {
       const agent = new ToolLoopAgent({
         model: this.models[role],
         instructions: `${instructions}\n${authorityInstruction}`,
         output: Output.object({ schema }),
-        maxOutputTokens,
+        ...(this.maxOutputTokens !== undefined ? { maxOutputTokens: this.maxOutputTokens } : {}),
         maxRetries: 0,
         stopWhen: isStepCount(1),
       });

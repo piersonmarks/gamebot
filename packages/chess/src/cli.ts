@@ -2,11 +2,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
-import { FileTraceSink, SessionRuntime, evaluate, aiSdkReflex, type EvaluationConfiguration } from "@gamebot/core";
+import { FileTraceSink, SessionRuntime, evaluate, aiSdkReflex, learningOutputTokenLimit, type EvaluationConfiguration } from "@gamebot/core";
 import { ChessGame, type ChessState } from "./game.js";
 
 const watch = process.argv.includes("--watch");
 const useAi = process.argv.includes("--ai");
+const maxOutputTokens = learningOutputTokenLimit();
 const toolDrafts = resolve(".gamebot", "games", "chess", "tools");
 await mkdir(toolDrafts, { recursive: true });
 const seed = Number(process.argv.find(arg => arg.startsWith("--seed="))?.slice(7) ?? 1);
@@ -33,7 +34,7 @@ const configuration: EvaluationConfiguration = {
       },
       reflex: useAi ? aiSdkReflex<ChessState, string>({
         model: model!,
-        maxOutputTokens: 96,
+        ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
         timeoutMs: 15_000,
         render(context, candidates) {
           return JSON.stringify({

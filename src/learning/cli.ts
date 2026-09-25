@@ -18,6 +18,15 @@ export function learningArgument(name: string): string | undefined {
   return value;
 }
 
+/** An explicit "default" clears a saved output budget on resume. */
+export function learningOutputTokenLimit(saved?: number): number | undefined {
+  const value = learningArgument("max-output-tokens") ?? saved;
+  if (value === undefined || value === "default") return undefined;
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("--max-output-tokens must be a positive integer or default");
+  return limit;
+}
+
 export function learningConsole(verbose = false): LearningReporter {
   return event => {
     if (event.type === "goal.resolved") {
@@ -85,7 +94,8 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     const selection = learningArgument("policy");
     const coldStart = saved?.coldStart ?? process.argv.includes("--cold-start");
     if (selection !== undefined && (process.argv.includes("--fresh") || coldStart)) throw new Error("--policy cannot be combined with --fresh or --cold-start");
-    const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? saved?.maxCalls ?? 10000), report);
+    const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? saved?.maxCalls ?? 10000),
+      report, learningOutputTokenLimit(saved?.maxOutputTokens));
     const setupEvents: LearningEvent[] = [];
     models.report = async event => { setupEvents.push(event); await report(event); };
     if (learningArgument("goal") !== undefined && !game.goalOptions && !game.requestedGoal) game.requestedGoal = learningArgument("goal");

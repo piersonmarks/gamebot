@@ -105,11 +105,12 @@ export class ContinualLearningSession<State, Action> {
         this.checkpoint.pending = undefined;
         archivedLegacyWindow = true;
       }
-      await this.writeJson(manifestPath, { ...saved, reviewControl: "model", maxCalls: models.maxCalls, limits: this.options.limits ?? saved.limits });
+      await this.writeJson(manifestPath, { ...saved, reviewControl: "model", maxCalls: models.maxCalls,
+        maxOutputTokens: models.maxOutputTokens, limits: this.options.limits ?? saved.limits });
     } else {
       await this.writeJson(manifestPath, { mode: "continual-v1", identity, seed: this.seed,
         reviewControl: "model", coldStart: this.options.coldStart ?? false,
-        fresh: this.options.fresh ?? false, limits: this.options.limits, maxCalls: models.maxCalls });
+        fresh: this.options.fresh ?? false, limits: this.options.limits, maxCalls: models.maxCalls, maxOutputTokens: models.maxOutputTokens });
     }
     await this.emit("learning.created", { directory: this.directory, resumed: !!this.options.resume });
     models.report = async event => {
