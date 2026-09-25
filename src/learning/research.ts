@@ -56,7 +56,11 @@ export async function playEpisode<State, Action>(game: LearningGame<State, Actio
       const result = await runtime.step();
       options.signal.throwIfAborted();
       state = (result.after ?? await adapter.observe()).state;
-      if (!result.candidate) throw new Error("No action was selected before the episode ended");
+      if (!result.candidate) {
+        if (game.outcome(state).done) break;
+        if (game.realtime) { await setImmediate(); continue; }
+        throw new Error("No action was selected before the episode ended");
+      }
       steps++;
       const transition = { step: steps, before: result.before.state, action: result.candidate.action, after: state, verification: result.verification,
         ...(Object.keys(judgments).length ? { judgments } : {}) };
@@ -75,6 +79,7 @@ export async function playEpisode<State, Action>(game: LearningGame<State, Actio
   } finally {
     options.signal.removeEventListener("abort", stop);
     await runtime.finish();
+    if (game.realtime) state = (await adapter.observe()).state;
   }
   const outcome = game.outcome(state);
   const sample = trajectory.filter((_, index) => index % Math.max(1, Math.ceil(trajectory.length / 12)) === 0 || index >= trajectory.length - 12);

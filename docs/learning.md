@@ -52,6 +52,8 @@ There is no separate post-game learner. A model-requested review closes the curr
 
 Observation runs as bounded code without inference. Quiet AI play uses Jev alone; quiet generated-code play needs no model calls. Reviews await models between actions and do not pause an external world's clock. The runtime reobserves and validates actions before dispatch. User budgets and Ctrl+C stop work and save evidence; they never initiate a review.
 
+Snake also advances on its own real-time clock after the first direction input. It continues straight during model calls, including tactical and learning reviews. The observer decides when to request intelligence with timing information in its observations; the harness does not pause the game or insert automatic fallback moves. Viewer updates follow game ticks even while a model is busy. For Snake, `--pace` is the positive tick interval in milliseconds (default 120), including in headless mode.
+
 The strategist/researcher can revise prompts, Jev questions and composition code, supervision instructions and observer programs, or a generated action-selection program. It can also return no revision and gather more evidence. Rules, goal evaluation and native action legality remain outside the editable player.
 
 ## The three tiers

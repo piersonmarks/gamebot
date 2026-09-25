@@ -72,6 +72,8 @@ export interface GameAdapter<State, Action> {
   execute(action: Action, signal: AbortSignal): Promise<void>;
   /** Signals are game-native interpretations of observations and outcomes. */
   signals?(context: DecisionContext<State>): Signals | Promise<Signals>;
+  /** Release adapter-owned resources when a session ends; never used by model supervision. */
+  dispose?(): void | Promise<void>;
 }
 
 export interface CandidateGenerator<State, Action> {

@@ -317,6 +317,10 @@ export class ContinualLearningSession<State, Action> {
     this.stop();
     await this.queue;
     await this.runtime?.finish();
+    if (this.options.game.realtime && this.adapter && this.checkpoint.window) {
+      try { this.checkpoint.window.after = (await this.adapter.observe()).state; }
+      catch (error) { await this.emit("learning.observation-error", { error: String(error) }); }
+    }
     this.options.signal.removeEventListener("abort", this.onAbort);
     try {
       if (this.checkpoint.policy) {

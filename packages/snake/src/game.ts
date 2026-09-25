@@ -12,6 +12,9 @@ export interface SnakeState {
   alive: boolean;
   foodEaten: number;
   tick: number;
+  tickIntervalMs: number;
+  nextTickInMs: number;
+  running: boolean;
   board: string;
 }
 
@@ -44,7 +47,7 @@ export function foodDistance(state: SnakeState, direction: Direction): number {
     Math.abs(head.y + offset[direction].y - state.food.y);
 }
 
-/** Seeded grid Snake; the runtime sees state and candidate directions, not game internals. */
+/** Seeded real-time Snake; direction inputs never control the passage of game time. */
 export class SnakeGame implements GameAdapter<SnakeState, Direction> {
   private readonly width = 8;
   private readonly height = 8;
@@ -56,34 +59,91 @@ export class SnakeGame implements GameAdapter<SnakeState, Direction> {
   private tick = 0;
   private randomState: number;
   private lastEvent?: string;
+  private clock?: ReturnType<typeof setInterval>;
+  private nextTick = 0;
+  private started = false;
+  private disposed = false;
+  private pendingDirection?: Direction;
+  private readonly waiting = new Set<() => void>();
 
-  constructor(seed: number, readonly targetFood = 5) {
+  constructor(seed: number, readonly targetFood = 5, readonly tickIntervalMs = 120,
+    private readonly onState?: (state: SnakeState) => void) {
+    if (!Number.isSafeInteger(tickIntervalMs) || tickIntervalMs < 1) throw new Error("Snake tick interval must be a positive integer");
     this.randomState = seed >>> 0;
     this.food = this.spawnFood();
   }
 
   async observe() {
+    this.advanceClock();
     return {
-      state: {
-        width: this.width, height: this.height,
-        body: this.body.map(part => ({ ...part })),
-        food: this.food && { ...this.food },
-        direction: this.direction, alive: this.alive,
-        foodEaten: this.eaten, tick: this.tick, board: this.board(),
-      },
+      state: this.snapshot(),
       revision: String(this.tick),
-      time: { turn: this.tick },
+      time: { turn: this.tick, gameMs: this.tick * this.tickIntervalMs },
       events: this.lastEvent ? [this.lastEvent] : [],
     };
   }
 
+  private snapshot(): SnakeState {
+    return {
+      width: this.width, height: this.height,
+      body: this.body.map(part => ({ ...part })),
+      food: this.food && { ...this.food },
+      direction: this.direction, alive: this.alive,
+      foodEaten: this.eaten, tick: this.tick, board: this.board(),
+      tickIntervalMs: this.tickIntervalMs, running: !!this.clock,
+      nextTickInMs: this.clock ? Math.max(0, this.nextTick - performance.now()) : 0,
+    };
+  }
+
   validateAction(action: Direction, observation: { revision?: string; state: SnakeState }) {
-    return observation.revision === String(this.tick) && this.alive &&
+    this.advanceClock();
+    return !this.disposed && observation.revision === String(this.tick) && !this.outcome().complete &&
       legalDirections(observation.state).includes(action);
   }
 
   async execute(action: Direction, signal: AbortSignal) {
-    if (signal.aborted) return;
+    signal.throwIfAborted();
+    this.advanceClock();
+    if (this.disposed || this.outcome().complete) throw new Error("Snake is no longer running");
+    if (!legalDirections(this.snapshot()).includes(action)) throw new Error("Snake cannot reverse direction");
+    this.pendingDirection = action;
+    if (!this.started) {
+      this.started = true;
+      this.nextTick = performance.now() + this.tickIntervalMs;
+      this.clock = setInterval(() => this.advanceClock(), this.tickIntervalMs);
+    }
+    // Inputs change the next direction; they never advance or reset the game clock.
+    await new Promise<void>(resolve => {
+      const done = () => { this.waiting.delete(done); signal.removeEventListener("abort", done); resolve(); };
+      this.waiting.add(done);
+      signal.addEventListener("abort", done, { once: true });
+      if (signal.aborted) done();
+    });
+  }
+
+  dispose(): void {
+    this.advanceClock();
+    this.disposed = true;
+    if (this.clock) clearInterval(this.clock);
+    this.clock = undefined;
+    for (const done of this.waiting) done();
+    this.onState?.(this.snapshot());
+  }
+
+  private advanceClock() {
+    // Catch up elapsed ticks even if synchronous agent computation delayed the event loop.
+    while (this.clock && performance.now() >= this.nextTick && !this.outcome().complete) {
+      this.nextTick += this.tickIntervalMs;
+      const action = this.pendingDirection ?? this.direction;
+      this.pendingDirection = undefined;
+      this.move(action);
+      if (this.outcome().complete) { clearInterval(this.clock); this.clock = undefined; }
+      this.onState?.(this.snapshot());
+      for (const done of this.waiting) done();
+    }
+  }
+
+  private move(action: Direction) {
     const head = this.body[0]!;
     const next = { x: head.x + offset[action].x, y: head.y + offset[action].y };
     const eating = this.food !== undefined && same(next, this.food);

@@ -49,7 +49,7 @@ export function learningConsole(verbose = false): LearningReporter {
 
 /** Bridges with their own game window open it even in headless mode. */
 export interface ResearchGameWindow {
-  open(options: { headless: boolean; signal: AbortSignal; onClose: () => void }): Promise<{ close(): Promise<void> }>;
+  open(options: { headless: boolean; signal: AbortSignal; onClose: () => void }): Promise<{ close(): Promise<void>; report?: LearningReporter }>;
 }
 
 export async function runResearchCli<State, Action>(game: LearningGame<State, Action>, view?: ResearchViewerOptions | ResearchGameWindow): Promise<void> {
@@ -72,7 +72,8 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
   const report: LearningReporter = async event => {
     await consoleReport(event);
     viewer?.report(event);
-    if (!headless && pace && (event.type === "episode.step" || event.type === "episode.completed")) {
+    await gameWindow?.report?.(event);
+    if (!game.realtime && !headless && pace && (event.type === "episode.step" || event.type === "episode.completed")) {
       await delay(pace, undefined, { signal: controller.signal });
     }
   };
@@ -97,7 +98,7 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     let policy = selection === undefined ? undefined : await loadPlayer(selection, game);
     if (view && "open" in view) {
       gameWindow = await view.open({ headless, signal: controller.signal, onClose: stop });
-      console.log(`GameBot controls the real ${game.id} game${headless ? " in a headless browser" : " window"}. Ctrl+C stops research.`);
+      console.log(`GameBot controls ${game.id}${headless ? " without a visible window" : " in its game window"}. Ctrl+C stops research.`);
     } else if (!headless) {
       if (!view) throw new Error(`Game ${game.id} has no research viewer. Use --headless to run without a window.`);
       viewer = await startResearchViewer(view);

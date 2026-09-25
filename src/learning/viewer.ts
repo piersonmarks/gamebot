@@ -98,6 +98,7 @@ stream.onmessage=({data})=>{
       const envelope = event.detail as ViewerDetail;
       const detail = envelope.event ?? envelope;
       switch (event.type) {
+        case "game.state": view.state = detail.state; break;
         case "research.setup": view.state = detail.state; view.phase = "Planning the first attempt"; break;
         case "episode.started":
         case "episode.resumed":

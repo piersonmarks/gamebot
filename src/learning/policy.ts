@@ -15,6 +15,8 @@ export interface LearningGame<State, Action> {
   goal: Goal;
   evaluation?: GoalEvaluation;
   requestedGoal?: string;
+  /** The world advances during inference; presentation pacing must not delay control. */
+  realtime?: boolean;
   goalOptions?: Record<string, { description: string; objective: "achievement" | "score";
     outcome(state: State): { done: boolean; won: boolean; score: number } }>;
 

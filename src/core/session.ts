@@ -35,6 +35,7 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
   private lastVerification?: Verification;
   private queue: Promise<void> = Promise.resolve();
   private stopped = false;
+  private disposal?: Promise<void>;
   private readonly running = new Map<ReasoningRole, AbortController>();
   private readonly background = new Set<Promise<void>>();
   private readonly cancellations = new Set<Promise<void>>();
@@ -207,6 +208,8 @@ export class SessionRuntime<State, Action, Assumptions = unknown> {
     await this.queue;
     await Promise.all([...this.background, ...this.cancellations]);
     await this.queue;
+    this.disposal ??= Promise.resolve().then(() => this.options.adapter.dispose?.());
+    await this.disposal;
   }
 
   private async advanceSkill(before: Observation<State>): Promise<StepResult<State, Action>> {
