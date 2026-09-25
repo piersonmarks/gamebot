@@ -13,8 +13,7 @@ export class SnakeSession {
   onClose?: () => void;
   private notified = false;
 
-  constructor(readonly target = 5, readonly tickIntervalMs = 120) {
-    if (!Number.isInteger(target) || target < 1 || target > 61) throw new Error("Snake --target must be from 1 to 61");
+  constructor(readonly tickIntervalMs = 120) {
     if (!Number.isSafeInteger(tickIntervalMs) || tickIntervalMs < 1) throw new Error("Snake --pace must be a positive tick interval in milliseconds");
   }
 

@@ -3,7 +3,7 @@ import { learningArgument, runResearchCli, openGameWindow } from "@gamebot/core"
 import { learningSnake } from "./learning.js";
 import { SnakeSession } from "./session.js";
 
-const world = new SnakeSession(Number(learningArgument("target") ?? 5), Number(learningArgument("pace") ?? 120));
+const world = new SnakeSession(Number(learningArgument("pace") ?? 120));
 await runResearchCli(learningSnake(world), {
   async open({ headless, log, onClose }) {
     world.onClose = onClose;

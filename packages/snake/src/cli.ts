@@ -18,7 +18,7 @@ if (!Number.isSafeInteger(seed) || !Number.isSafeInteger(turns) || turns < 1 ||
     !Number.isSafeInteger(pace) || pace < 1 || !Number.isSafeInteger(maxCalls) || maxCalls < 1) {
   throw new Error("Invalid --seed, --turns, --pace or --max-calls");
 }
-const world = new SnakeSession(Number(learningArgument("target") ?? 5), pace);
+const world = new SnakeSession(pace);
 const definition = learningSnake(world);
 const selection = learningArgument("policy");
 if (selection !== undefined && process.argv.includes("--ai")) throw new Error("Use either --ai or --policy");
@@ -86,11 +86,11 @@ try {
       const event = { type: "episode.step", detail: { step: steps, action: result.candidate.action, after: state, outcome: definition.outcome(state) } };
       world.report(event); if (terminal.enabled) terminal.report(event);
     }
-    if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; food ${state.foodEaten}/${world.target}\n${state.board}\n`);
+    if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; food ${state.foodEaten}\n${state.board}\n`);
   }
   await session.finish();
   state = (await game.observe()).state;
-  const summary = { ...definition.outcome(state), steps, status: interrupted ? "interrupted" : (state.foodEaten >= world.target ? "Food target reached" : state.alive ? "Step limit reached" : "Collision"),
+  const summary = { ...definition.outcome(state), steps, status: interrupted ? "interrupted" : (definition.outcome(state).won ? "Board filled" : state.alive ? "Step limit reached" : "Collision"),
     tracePath: trace.path, modelUsage: models?.usage };
   if (terminal.enabled) terminal.report({ type: "terminal.result", detail: summary });
   else console.log(JSON.stringify(summary, null, 2));
