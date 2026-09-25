@@ -1,3 +1,4 @@
+import { createLearningTerminal } from "./terminal.js";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { resolveGameGoal } from "./goal.js";
@@ -18,56 +19,31 @@ export function learningArgument(name: string): string | undefined {
   return value;
 }
 
-export function learningConsole(verbose = false): LearningReporter {
-  return event => {
-    if (event.type === "goal.resolved") {
-      const { goal, evaluation } = event.detail as { goal: { description: string }; evaluation: { description: string; efficiency: string } };
-      console.log(`Goal: ${goal.description}. Evaluation: ${evaluation.description}. Efficiency priority: ${evaluation.efficiency}.`);
-      return;
-    }
-    if (!verbose && (event.type === "research.proposal" || event.type === "learning.proposal" || event.type === "player.initialized")) {
-      const { policy, ...summary } = event.detail as { policy: { kind: string }; [key: string]: unknown };
-      console.log(`[${event.type}] ${JSON.stringify({ ...summary, policyKind: policy?.kind ?? "no-change" })}`);
-      return;
-    }
-    if (!verbose && event.type === "learning.window") {
-      const item = event.detail as { reason: string; steps: number; progress: number };
-      console.log(`[learning.window] ${item.reason}; ${item.steps} decisions; progress ${item.progress}`);
-      return;
-    }
-    if (event.type === "episode.completed") {
-      const item = event.detail as { episode?: number; seed?: number; set?: string; stopReason: string;
-        score?: number; outcome?: { score: number }; steps: number };
-      const label = item.episode === undefined ? `${item.set} seed ${item.seed}` : `Game ${item.episode}`;
-      console.log(`${label}: ${item.stopReason}; score ${item.outcome?.score ?? item.score}; ${item.steps} decisions`);
-    } else if (event.type.startsWith("research.") || event.type.startsWith("learning.") || event.type === "player.initialized" ||
-      verbose && !event.type.startsWith("runtime.") && event.type !== "episode.step") {
-      console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
-    }
-  };
-}
+export { learningConsole } from "./terminal.js";
 
 /** Bridges with their own game window open it even in headless mode. */
 export interface ResearchGameWindow {
-  open(options: { headless: boolean; signal: AbortSignal; onClose: () => void }): Promise<{ close(): Promise<void>; report?: LearningReporter }>;
+  open(options: { headless: boolean; signal: AbortSignal; onClose: () => void; log: (message: string) => void }): Promise<{ close(): Promise<void>; report?: LearningReporter }>;
 }
 
 export async function runResearchCli<State, Action>(game: LearningGame<State, Action>, view?: ResearchViewerOptions | ResearchGameWindow): Promise<void> {
   if (process.argv.some(arg => /^--learn-(every|ms)(=|$)/.test(arg))) {
     throw new Error("Review schedules were removed; the supervising model decides when to request learning");
   }
+  const terminal = createLearningTerminal({ game: game.id, mode: "autoplay", goal: game.goal.description, verbose: process.argv.includes("--verbose") });
   const controller = new AbortController();
   let resolveStop!: () => void;
   const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
   const stop = () => {
     if (controller.signal.aborted) return;
-    console.log("Stopping research..."); controller.abort(); resolveStop();
+    terminal.report({ type: "terminal.stopping", detail: {} });
+    terminal.log("Stopping research..."); controller.abort(); resolveStop();
   };
   process.once("SIGINT", stop);
   let viewer: Awaited<ReturnType<typeof startResearchViewer>> | undefined;
   let gameWindow: Awaited<ReturnType<ResearchGameWindow["open"]>> | undefined;
   const headless = process.argv.includes("--headless");
-  const consoleReport = learningConsole(process.argv.includes("--verbose"));
+  const consoleReport = terminal.report;
   const pace = Number(learningArgument("pace") ?? 200);
   const report: LearningReporter = async event => {
     await consoleReport(event);
@@ -97,16 +73,17 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     models.report = report;
     let policy = selection === undefined ? undefined : await loadPlayer(selection, game);
     if (view && "open" in view) {
-      gameWindow = await view.open({ headless, signal: controller.signal, onClose: stop });
-      console.log(`GameBot controls ${game.id}${headless ? " without a visible window" : " in its game window"}. Ctrl+C stops research.`);
+      gameWindow = await view.open({ headless, signal: controller.signal, onClose: stop, log: terminal.log });
+      terminal.log(`GameBot controls ${game.id}${headless ? " without a visible window" : " in its game window"}. Ctrl+C stops research.`);
     } else if (!headless) {
       if (!view) throw new Error(`Game ${game.id} has no research viewer. Use --headless to run without a window.`);
       viewer = await startResearchViewer(view);
-      console.log(`Watch GameBot live at ${viewer.url}. Ctrl+C stops research.`);
-      openGameWindow(viewer.url);
+      terminal.log(`Watch GameBot live at ${viewer.url}. Ctrl+C stops research.`);
+      openGameWindow(viewer.url, terminal.log);
     }
-    console.log(`Researching ${game.id}: strategist → tactician → reflex/JEV; model-call budget ${models.maxCalls}. Ctrl+C stops the run.`);
-    if (coldStart) console.log("Cold start: rules and goal only; prior learning is excluded and results stay in this experiment.");
+    terminal.start();
+    terminal.log(`Researching ${game.id}: strategist → tactician → reflex/JEV; model-call budget ${models.maxCalls}. Ctrl+C stops the run.`);
+    if (coldStart) terminal.log("Cold start: rules and goal only; prior learning is excluded and results stay in this experiment.");
     const benchmark = saved ? saved.mode !== "continual-v1" : process.argv.includes("--benchmark");
     if (saved?.mode === "continual-v1" && process.argv.includes("--benchmark")) throw new Error("Cannot resume live learning as a benchmark");
     if (!benchmark) {
@@ -128,16 +105,16 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
       signal: controller.signal, report,
     });
     if (!headless && !controller.signal.aborted) {
-      console.log("Research complete. The final board stays visible until Ctrl+C.");
+      terminal.log("Research complete. The final board stays visible until Ctrl+C.");
       await stopped;
     }
   } catch (error) {
+    if (!controller.signal.aborted) terminal.report({ type: "terminal.error", detail: { message: String(error) } });
     viewer?.report({ type: "research.error", detail: { message: controller.signal.aborted ? "Interrupted" : String(error) } });
     if (!controller.signal.aborted) throw error;
     process.exitCode = 130;
   } finally {
     process.removeListener("SIGINT", stop);
-    await viewer?.close();
-    await gameWindow?.close();
+    try { await viewer?.close(); await gameWindow?.close(); } finally { terminal.close(); }
   }
 }

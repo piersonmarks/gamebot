@@ -16,11 +16,11 @@ type ViewerDetail = {
 };
 
 /** Open the existing default browser; never install or download a browser. */
-export function openGameWindow(url: string): void {
+export function openGameWindow(url: string, log: (message: string) => void = console.log): void {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
   const child = spawn(command, process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url],
     { stdio: "ignore", detached: true });
-  const unavailable = () => console.log(`Open ${url} in your browser to watch.`);
+  const unavailable = () => log(`Open ${url} in your browser to watch.`);
   child.once("error", unavailable);
   child.once("exit", code => { if (code) unavailable(); });
   child.unref();

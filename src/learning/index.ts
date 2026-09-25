@@ -9,3 +9,5 @@ export { jevPolicySchema, type JevPolicy } from "./judgment.js";
 export * from "./goal.js";
 
 export * from "./continual.js";
+
+export { createLearningTerminal } from "./terminal.js";

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { FileTraceSink, SessionRuntime, ContinualLearningSession, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv,
-  loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions } from "@gamebot/core";
+  createLearningTerminal, loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions } from "@gamebot/core";
 import { SnakeGame, foodDistance, wouldCollide, type SnakeState, type Direction } from "./game.js";
 import { learningSnake } from "./learning.js";
 import { startViewer } from "./viewer.js";
@@ -34,7 +34,8 @@ let steps = 0;
 const report = async (event: LearningEvent) => {
   await trace.record({ sequence: steps + 1, time: new Date().toISOString(), type: event.type,
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 }, detail: event.detail });
-  if (verbose || event.type === "learning.created" || event.type === "learning.saved") console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
+  if (terminal.enabled) terminal.report(event);
+  else if (verbose || event.type === "learning.created" || event.type === "learning.saved") console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
 };
 const models = modelConfig ? new PlayerModelRunner(modelConfig, maxCalls, report) : undefined;
 const sessionOptions: SessionOptions<SnakeState, Direction> = {
@@ -51,39 +52,49 @@ const sessionOptions: SessionOptions<SnakeState, Direction> = {
 let interrupted = false;
 let resolveStop!: () => void;
 const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
+const terminal = createLearningTerminal({ game: "snake", mode: "game", goal: definition.goal.description, verbose });
+terminal.report({ type: "terminal.trace", detail: { tracePath: trace.path } });
 const controller = new AbortController();
-const stop = () => { interrupted = true; controller.abort(); session?.stop(); resolveStop(); };
+const stop = () => { terminal.report({ type: "terminal.stopping", detail: {} }); interrupted = true; controller.abort(); session?.stop(); resolveStop(); };
 process.once("SIGINT", stop);
 try {
   if (viewer) {
-    console.log(`Watch Gamebot at ${viewer.url}. Ctrl+C stops play and closes the viewer.`);
+    terminal.log(`Watch Gamebot at ${viewer.url}. Ctrl+C stops play and closes the viewer.`);
     viewer.publish((await game.observe()).state);
-    openGameWindow(viewer.url);
+    openGameWindow(viewer.url, terminal.log);
   }
+  terminal.start();
   session = builtin || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
     : await ContinualLearningSession.open({ game: definition, adapter: game, models: models!, policy, seed,
       signal: controller.signal, trace, report, coldStart: process.argv.includes("--cold-start") });
-  console.log(`Player: ${builtin ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${policy?.kind ?? "initial AI"})`}.`);
+  terminal.report({ type: "terminal.player", detail: { source: builtin ? "heuristic" : policy?.kind ?? "Jev" } });
+  terminal.log(`Player: ${builtin ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${policy?.kind ?? "initial AI"})`}.`);
   let state: SnakeState = (await game.observe()).state;
   viewer?.publish(state);
+  if (terminal.enabled && session instanceof SessionRuntime) terminal.report({ type: "episode.started", detail: { state } });
   while (steps < turns && !definition.outcome(state).done && !interrupted) {
     const result = await session.step();
     state = (await game.observe()).state;
     if (!result.candidate) continue;
     steps++;
     viewer?.publish(state);
-    if (watch) console.log(`Tick ${state.tick}; food ${state.foodEaten}/${game.targetFood}\n${state.board}\n`);
+    if (terminal.enabled && session instanceof SessionRuntime) terminal.report({ type: "episode.step", detail: { step: steps, action: result.candidate.action, after: state, outcome: definition.outcome(state) } });
+    if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; food ${state.foodEaten}/${game.targetFood}\n${state.board}\n`);
   }
   await session.finish();
   state = (await game.observe()).state;
-  console.log(JSON.stringify({ ...definition.outcome(state), steps, status: interrupted ? "interrupted" : game.status(),
-    tracePath: trace.path, modelUsage: models?.usage }, null, 2));
+  const summary = { ...definition.outcome(state), steps, status: interrupted ? "interrupted" : game.status(),
+    tracePath: trace.path, modelUsage: models?.usage };
+  if (terminal.enabled) terminal.report({ type: "terminal.result", detail: summary });
+  else console.log(JSON.stringify(summary, null, 2));
   if (viewer && !interrupted) await stopped;
 } catch (error) {
-  if (!interrupted) throw error;
+  if (!interrupted) { terminal.report({ type: "terminal.error", detail: { message: String(error) } }); throw error; }
 } finally {
-  await session?.finish();
-  game.dispose();
-  process.removeListener("SIGINT", stop);
-  await viewer?.close();
+  try {
+    await session?.finish();
+    game.dispose();
+    process.removeListener("SIGINT", stop);
+    await viewer?.close();
+  } finally { terminal.close(); }
 }

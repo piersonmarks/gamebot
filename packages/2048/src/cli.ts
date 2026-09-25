@@ -5,7 +5,7 @@ import { resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { FileTraceSink, SessionRuntime, ContinualLearningSession, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
-  playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions } from "@gamebot/core";
+  createLearningTerminal, playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
 import { learning2048 } from "./learning.js";
@@ -53,6 +53,7 @@ const visionSchema = z.object({
   uncertain: z.boolean(),
 });
 
+const terminal = createLearningTerminal({ game: "2048", mode: "game", goal: definition.goal.description, verbose });
 let stop = false;
 let session: SessionRuntime<Game2048State, Direction> | ContinualLearningSession<Game2048State, Direction> | undefined;
 const visionAbort = new AbortController();
@@ -64,7 +65,8 @@ const onInterrupt = () => {
   session?.stop();
   visionAbort.abort();
   resolveInterrupted();
-  console.log("\nStopping Gamebot...");
+  terminal.report({ type: "terminal.stopping", detail: {} });
+  terminal.log("Stopping Gamebot...");
 };
 process.once("SIGINT", onInterrupt);
 const setupEvents: LearningEvent[] = [];
@@ -91,6 +93,7 @@ try {
   await browser.open(headless, visionAbort.signal, onInterrupt);
   await browser.create(seed, maximizeScore);
   const page = browser.page;
+  terminal.start();
 
   const visionUsage = { calls: 0, inputTokens: 0, outputTokens: 0, latencyMs: 0 };
   const readVision = visionModel ? aiSdkVisionExtractor({
@@ -103,7 +106,7 @@ try {
       visionUsage.inputTokens += report.usage.inputTokens ?? 0;
       visionUsage.outputTokens += report.usage.outputTokens ?? 0;
       visionUsage.latencyMs += report.latencyMs;
-      if (verbose) console.log(`[verbose] vision model ${visionModel}: ${Math.round(report.latencyMs)} ms, ${report.usage.inputTokens ?? 0} input / ${report.usage.outputTokens ?? 0} output tokens`);
+      if (verbose) terminal.log(`[verbose] vision model ${visionModel}: ${Math.round(report.latencyMs)} ms, ${report.usage.inputTokens ?? 0} input / ${report.usage.outputTokens ?? 0} output tokens`);
     },
   }) : undefined;
   const game = new Game2048(page, readVision ? async () => {
@@ -113,15 +116,17 @@ try {
   } : undefined, maximizeScore);
   const runId = randomUUID();
   const trace = new FileTraceSink(resolve(".gamebot", "traces", `2048-${seed}-${runId}.jsonl`));
+  terminal.report({ type: "terminal.trace", detail: { tracePath: trace.path } });
   const liveTrace = { async record(event: TraceEvent) {
     await trace.record(event);
-    if (verbose && event.type !== "observation") {
+    if (!terminal.enabled && verbose && event.type !== "observation") {
       console.log(`[verbose] ${event.type}${event.detail === undefined ? "" : `: ${JSON.stringify(event.detail)}`}`);
     }
   } };
   let playerSequence = 0;
   const reportLearning = async (event: LearningEvent) => {
-    if (!verbose && (event.type === "learning.created" || event.type === "learning.saved")) console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
+    if (terminal.enabled) terminal.report(event);
+    else if (!verbose && (event.type === "learning.created" || event.type === "learning.saved")) console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
     await liveTrace.record({
     sequence: playerSequence, time: new Date().toISOString(), type: event.type,
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 },
@@ -133,7 +138,7 @@ try {
   const sessionOptions: SessionOptions<Game2048State, Direction> = {
     adapter: game,
     candidates: policy ? { generate: candidates2048 } : definition.candidates,
-    reflex: policy ? policyReflex(policy, verbose ? ranking => console.log(`[verbose] policy ranking: ${JSON.stringify(ranking)}`) : undefined)
+    reflex: policy ? policyReflex(policy, verbose ? ranking => terminal.log(`[verbose] policy ranking: ${JSON.stringify(ranking)}`) : undefined)
       : new HierarchicalPlayer({ game: definition, models: models!, policy: learnedPolicy, report: reportLearning }),
     verifier: { verify({ before, after, candidate, executionError }) {
       if (executionError) return { status: "failure", reason: String(executionError) };
@@ -162,24 +167,27 @@ try {
       models, policy: learnedPolicy, signal: visionAbort.signal, seed, trace: liveTrace, report: reportLearning,
       coldStart: process.argv.includes("--cold-start") });
 
-  console.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
-  console.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
-  console.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
+  terminal.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
+  terminal.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
+  terminal.report({ type: "terminal.player", detail: { source: policy ? "heuristic" : learnedPolicy?.kind ?? "Jev" } });
+  terminal.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
   let finalState: Game2048State | undefined;
   let moves = 0;
   let stopReason = "no-action";
   try {
     finalState = (await game.observe()).state;
+    if (terminal.enabled && session instanceof SessionRuntime) terminal.report({ type: "episode.started", detail: { state: finalState } });
     for (let step = 0; (steps === undefined || step < steps) && !stop; step = moves) {
       if (definition.outcome(finalState).done) break;
-      if (verbose) console.log(`[verbose] turn ${step + 1} board: ${JSON.stringify(finalState.board)}`);
+      if (verbose) terminal.log(`[verbose] turn ${step + 1} board: ${JSON.stringify(finalState.board)}`);
       playerSequence = step + 1;
       const result = await session.step();
       if (stop) break;
       finalState = (result.after ?? await game.observe()).state;
       if (!result.candidate) { if (session instanceof ContinualLearningSession) continue; break; }
       moves++;
-      console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
+      if (terminal.enabled && session instanceof SessionRuntime) terminal.report({ type: "episode.step", detail: { step: moves, action: result.candidate.action, after: finalState, outcome: definition.outcome(finalState) } });
+      if (!terminal.enabled) console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
       if (observer === "vision" && result.verification?.status !== "success") {
         stopReason = "unverified";
         break;
@@ -200,7 +208,8 @@ try {
     await mkdir(dirname(screenshotPath), { recursive: true });
     await page.screenshot({ path: screenshotPath });
   }
-  console.log(JSON.stringify({
+  const summary = {
+    steps: moves,
     goal: definition.goal,
     score: finalState?.score,
     maxTile,
@@ -212,12 +221,17 @@ try {
     ...(models ? { modelUsage: models.usage } : {}),
     ...(visionModel ? { visionUsage } : {}),
     ...(screenshotPath && finalState ? { screenshotPath } : {}),
-  }, null, 2));
+  };
+  if (terminal.enabled) terminal.report({ type: "terminal.result", detail: { ...summary, ...(finalState ? definition.outcome(finalState) : {}) } });
+  else console.log(JSON.stringify(summary, null, 2));
   if (!headless && !stop) {
-    console.log("The game window stays open. Press Ctrl+C to close it.");
+    terminal.log("The game window stays open. Press Ctrl+C to close it.");
     await interrupted;
   }
+} catch (error) {
+  if (!stop) terminal.report({ type: "terminal.error", detail: { message: String(error) } });
+  throw error;
 } finally {
   process.removeListener("SIGINT", onInterrupt);
-  await browser.close();
+  try { await browser.close(); } finally { terminal.close(); }
 }

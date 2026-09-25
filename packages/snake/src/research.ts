@@ -7,11 +7,11 @@ let viewer: Awaited<ReturnType<typeof startResearchViewer>> | undefined;
 const game = learningSnake(Number(learningArgument("target") ?? 5), Number(learningArgument("pace") ?? 120),
   state => viewer?.report({ type: "game.state", detail: { state } }));
 await runResearchCli(game, {
-  async open({ headless }) {
+  async open({ headless, log }) {
     if (!headless) {
       viewer = await startResearchViewer(researchViewSnake);
-      console.log(`Watch GameBot live at ${viewer.url}`);
-      openGameWindow(viewer.url);
+      log(`Watch GameBot live at ${viewer.url}`);
+      openGameWindow(viewer.url, log);
     }
     return { report: event => viewer?.report(event), close: async () => { await viewer?.close(); } };
   },
