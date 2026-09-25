@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { CandidateGenerator, GameAdapter, Goal, Verifier } from "../core/index.js";
 import { evaluationSchema, type GoalEvaluation } from "./goal.js";
@@ -82,6 +82,26 @@ export function latestPlayerPath(gameId: string, goal?: Goal): string {
     return resolve(".gamebot", "games", gameId, "goals", key, "latest-player.json");
   }
   return resolve(".gamebot", "games", gameId, "latest-player.json");
+}
+
+/** The policy module owns the artifact format and its atomic publication. */
+export async function savePlayerArtifact<State, Action>(path: string, game: LearningGame<State, Action>, policy: PlayerPolicy,
+  options: { policyStatus?: string; evidence?: string; signal?: AbortSignal } = {}): Promise<string> {
+  const { signal, ...metadata } = options;
+  const artifact = { format: "gamebot-player-v2", gameId: game.id, gameVersion: game.version,
+    goal: game.goal, evaluation: game.evaluation, policy: playerPolicySchema.parse(policy), ...metadata };
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    signal?.throwIfAborted();
+    await writeFile(temporary, JSON.stringify(artifact, null, 2) + "\n");
+    signal?.throwIfAborted();
+    await rename(temporary, path);
+    return path;
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
 }
 
 export async function loadPlayer<State, Action>(selection: string, game: LearningGame<State, Action>): Promise<PlayerPolicy> {

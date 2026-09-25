@@ -4,8 +4,9 @@ import { mkdir, readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
-import { FileTraceSink, SessionRuntime, ContinualLearningSession, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner,
-  createLearningTerminal, playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument, type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions } from "@gamebot/core";
+import { FileTraceSink, aiSdkVisionExtractor, HierarchicalPlayer, PlayerModelRunner, runOrdinaryGame,
+  createLearningTerminal, playerModelsFromEnv, resolveGameGoal, loadPlayer, learningArgument as argument,
+  type PlayerPolicy, type TraceEvent, type LearningEvent, type SessionOptions, type SessionRuntime, type ContinualLearningSession } from "@gamebot/core";
 import { Game2048, previewMove, type Direction, type Game2048State } from "./index.js";
 import { candidates2048, defaultPolicy, policyReflex, policySchema, type Policy2048 } from "./policy.js";
 import { learning2048 } from "./learning.js";
@@ -162,41 +163,38 @@ try {
     } },
     trace: liveTrace,
   };
-  session = policy || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
-    : await ContinualLearningSession.open({ game: { ...definition, verifier: sessionOptions.verifier }, adapter: game,
-      models, policy: learnedPolicy, signal: visionAbort.signal, seed, trace: liveTrace, report: reportLearning,
-      coldStart: process.argv.includes("--cold-start") });
-
-  terminal.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
-  terminal.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
-  terminal.report({ type: "terminal.player", detail: { source: policy ? "heuristic" : learnedPolicy?.kind ?? "Jev" } });
-  terminal.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
   let finalState: Game2048State | undefined;
   let moves = 0;
   let stopReason = "no-action";
-  try {
-    finalState = (await game.observe()).state;
-    if (terminal.enabled && session instanceof SessionRuntime) terminal.report({ type: "episode.started", detail: { state: finalState } });
-    for (let step = 0; (steps === undefined || step < steps) && !stop; step = moves) {
-      if (definition.outcome(finalState).done) break;
-      if (verbose) terminal.log(`[verbose] turn ${step + 1} board: ${JSON.stringify(finalState.board)}`);
-      playerSequence = step + 1;
-      const result = await session.step();
-      if (stop) break;
-      finalState = (result.after ?? await game.observe()).state;
-      if (!result.candidate) { if (session instanceof ContinualLearningSession) continue; break; }
-      moves++;
-      if (terminal.enabled && session instanceof SessionRuntime) terminal.report({ type: "episode.step", detail: { step: moves, action: result.candidate.action, after: finalState, outcome: definition.outcome(finalState) } });
-      if (!terminal.enabled) console.log(`Move ${step + 1}: ${result.candidate.id}; score ${finalState.score}; max ${Math.max(...finalState.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
+  const played = await runOrdinaryGame({ game: definition, adapter: game, session: sessionOptions,
+    learning: policy || process.argv.includes("--no-learn") ? undefined : {
+      models, policy: learnedPolicy, seed, coldStart: process.argv.includes("--cold-start"),
+    },
+    signal: visionAbort.signal, maxSteps: steps, report: reportLearning,
+    onSession(current) {
+      session = current;
+      terminal.log(`Gamebot controls the separate 2048 window. Seed ${seed}; goal: ${definition.goal.description}; turns ${steps ?? "unlimited"}; observer ${observer}${visionModel ? ` (${visionModel})` : ""}.`);
+      terminal.log(`Evaluation: ${definition.evaluation?.description}; efficiency priority: ${definition.evaluation?.efficiency}.`);
+      terminal.report({ type: "terminal.player", detail: { source: policy ? "heuristic" : learnedPolicy?.kind ?? "Jev" } });
+      terminal.log(`Player: ${policy ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${learnedPolicy?.kind ?? "initial AI"})`}.`);
+    },
+    reportEpisode: terminal.enabled ? event => terminal.report(event) : undefined,
+    beforeStep(state, count) {
+      if (verbose) terminal.log(`[verbose] turn ${count + 1} board: ${JSON.stringify(state.board)}`);
+      playerSequence = count + 1;
+    },
+    async afterStep(result, state, count) {
+      moves = count;
+      if (!terminal.enabled) console.log(`Move ${count}: ${result.candidate!.id}; score ${state.score}; max ${Math.max(...state.board.flat())}${observer === "vision" ? `; verification ${result.verification?.status ?? "unknown"}` : ""}`);
       if (observer === "vision" && result.verification?.status !== "success") {
         stopReason = "unverified";
-        break;
+        return "stop";
       }
       if (pace) await delay(pace);
-    }
-  } catch (error) {
-    if (!stop) throw error;
-  } finally { await session.finish(); }
+    },
+  });
+  finalState = played.state;
+  moves = played.steps;
   const maxTile = finalState ? Math.max(...finalState.board.flat()) : 0;
   if (stop) stopReason = "interrupted";
   else if (finalState && definition.outcome(finalState).won) stopReason = finalState.won ? "won" : "target-reached";

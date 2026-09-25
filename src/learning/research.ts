@@ -5,7 +5,7 @@ import { setImmediate } from "node:timers/promises";
 import { SessionRuntime } from "../core/index.js";
 import { HierarchicalPlayer, initializePlayer } from "./player.js";
 import { ModelBudgetExceeded, ModelProviderError, PlayerModelRunner, type LearningReporter, type LearningEvent } from "./models.js";
-import { latestPlayerPath, loadPlayer, playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
+import { latestPlayerPath, loadPlayer, playerPolicySchema, policyId, savePlayerArtifact, type LearningGame, type PlayerPolicy } from "./policy.js";
 import type { GoalEvaluation } from "./goal.js";
 import { preflightPolicy } from "./preflight.js";
 import { proposeRevision, type Revision } from "./revision.js";
@@ -199,12 +199,7 @@ export async function runResearch<State, Action>(options: {
   try {
     await report({ type: options.resume ? "research.resumed" : "research.created", detail: { directory, experiment } });
     for (const event of options.setupEvents ?? []) await report(event);
-    const artifact = (policy: PlayerPolicy) => ({ format: "gamebot-player-v2", gameId: game.id, gameVersion: game.version, goal: game.goal, evaluation: game.evaluation, policy });
-    const save = async (policy: PlayerPolicy) => {
-      const path = join(directory, `${policyId(policy)}.json`);
-      await writeFile(path, JSON.stringify(artifact(policy), null, 2) + "\n");
-      return path;
-    };
+    const save = (policy: PlayerPolicy) => savePlayerArtifact(join(directory, `${policyId(policy)}.json`), game, policy);
     const seeds = (set: number) => Array.from({ length: options.games }, (_, index) => options.firstSeed + set * options.games + index);
     let firstWin = checkpoint.firstWin;
     const evaluate = async (policy: PlayerPolicy, set: string, seedSet: number[]) => {
@@ -353,12 +348,7 @@ export async function runResearch<State, Action>(options: {
     signal.throwIfAborted();
     // Only evaluated, error-free policies may become latest. Ordinary play never loads this implicitly.
     if (!options.coldStart && selectedTest.metrics.errors === 0) {
-      const latest = latestPlayerPath(game.id, game.goal);
-      await mkdir(dirname(latest), { recursive: true });
-      const temporary = `${latest}.${randomUUID()}.tmp`;
-      await writeFile(temporary, JSON.stringify(artifact(selected), null, 2) + "\n");
-      signal.throwIfAborted();
-      await rename(temporary, latest);
+      await savePlayerArtifact(latestPlayerPath(game.id, game.goal), game, selected, { signal });
     }
     const result = { policyPath: path, policyId: policyId(selected), promoted, coldStart: options.coldStart ?? false,
       episodes: Object.keys(checkpoint.results).length, firstWin: firstWin ?? null, initialTrain: initialTrain.metrics, baselineTest: baselineTest.metrics,

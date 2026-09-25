@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { SessionRuntime, type GameAdapter, type StepResult, type TraceSink, type Signals, type Verification } from "../core/index.js";
 import { HierarchicalPlayer, initializePlayer, LearningReviewRequested, type PlayerControllerState } from "./player.js";
 import { ModelBudgetExceeded, ModelProviderError, PlayerModelRunner, type LearningReporter, type LearningEvent } from "./models.js";
-import { playerPolicySchema, policyId, type LearningGame, type PlayerPolicy } from "./policy.js";
+import { playerPolicySchema, policyId, savePlayerArtifact, type LearningGame, type PlayerPolicy } from "./policy.js";
 import { ObserverError } from "./observer.js";
 import { preflightPolicy } from "./preflight.js";
 import { proposeRevision, type Revision } from "./revision.js";
@@ -494,9 +494,8 @@ export class ContinualLearningSession<State, Action> {
   }
 
   private async savePolicy() {
-    await this.writeJson(this.policyPath, { format: "gamebot-player-v2", gameId: this.options.game.id,
-      gameVersion: this.options.game.version, goal: this.options.game.goal, evaluation: this.options.game.evaluation,
-      policy: this.checkpoint.policy, policyStatus: this.policyStatus, evidence: "observational; not a matched benchmark promotion" });
+    await savePlayerArtifact(this.policyPath, this.options.game, this.checkpoint.policy!,
+      { policyStatus: this.policyStatus, evidence: "observational; not a matched benchmark promotion" });
   }
   private persist() {
     if (this.player) this.checkpoint.controller = this.player.snapshot();

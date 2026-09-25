@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { FileTraceSink, SessionRuntime, ContinualLearningSession, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv,
-  createLearningTerminal, loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions } from "@gamebot/core";
+import { FileTraceSink, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv, runOrdinaryGame,
+  createLearningTerminal, loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions,
+  type SessionRuntime, type ContinualLearningSession } from "@gamebot/core";
 import { foodDistance, wouldCollide, type SnakeState, type Direction } from "./game.js";
 import { learningSnake } from "./learning.js";
 import { SnakeSession } from "./session.js";
@@ -58,7 +59,7 @@ const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
 const terminal = createLearningTerminal({ game: "snake", mode: "game", goal: definition.goal.description, verbose });
 terminal.report({ type: "terminal.trace", detail: { tracePath: trace.path } });
 const controller = new AbortController();
-const stop = () => { terminal.report({ type: "terminal.stopping", detail: {} }); interrupted = true; controller.abort(); session?.stop(); resolveStop(); };
+const stop = () => { terminal.report({ type: "terminal.stopping", detail: {} }); interrupted = true; controller.abort(); resolveStop(); };
 world.onClose = stop;
 process.once("SIGINT", stop);
 try {
@@ -67,29 +68,23 @@ try {
     openGameWindow(world.url!, terminal.log);
   }
   terminal.start();
-  session = builtin || process.argv.includes("--no-learn") ? new SessionRuntime(sessionOptions, definition.goal)
-    : await ContinualLearningSession.open({ game: definition, adapter: game, models: models!, policy, seed,
-      signal: controller.signal, trace, report, coldStart: process.argv.includes("--cold-start") });
-  terminal.report({ type: "terminal.player", detail: { source: builtin ? "heuristic" : policy?.kind ?? "Jev" } });
-  terminal.log(`Player: ${builtin ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${policy?.kind ?? "initial AI"})`}.`);
-  let state: SnakeState = (await game.observe()).state;
-  if (session instanceof SessionRuntime) {
-    const event = { type: "episode.started", detail: { state } };
-    world.report(event); if (terminal.enabled) terminal.report(event);
-  }
-  while (steps < turns && !definition.outcome(state).done && !interrupted) {
-    const result = await session.step();
-    state = (await game.observe()).state;
-    if (!result.candidate) continue;
-    steps++;
-    if (session instanceof SessionRuntime) {
-      const event = { type: "episode.step", detail: { step: steps, action: result.candidate.action, after: state, outcome: definition.outcome(state) } };
-      world.report(event); if (terminal.enabled) terminal.report(event);
-    }
-    if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; food ${state.foodEaten}\n${state.board}\n`);
-  }
-  await session.finish();
-  state = (await game.observe()).state;
+  await runOrdinaryGame({ game: definition, adapter: game, session: sessionOptions,
+    learning: builtin || process.argv.includes("--no-learn") ? undefined : {
+      models: models!, policy, seed, coldStart: process.argv.includes("--cold-start"),
+    },
+    signal: controller.signal, maxSteps: turns, report,
+    onSession(current) {
+      session = current;
+      terminal.report({ type: "terminal.player", detail: { source: builtin ? "heuristic" : policy?.kind ?? "Jev" } });
+      terminal.log(`Player: ${builtin ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${policy?.kind ?? "initial AI"})`}.`);
+    },
+    reportEpisode: event => { world.report(event); if (terminal.enabled) terminal.report(event); },
+    afterStep(_result, state, count) {
+      steps = count;
+      if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; food ${state.foodEaten}\n${state.board}\n`);
+    },
+  });
+  const state = (await game.observe()).state;
   const summary = { ...definition.outcome(state), steps, status: interrupted ? "interrupted" : (definition.outcome(state).won ? "Board filled" : state.alive ? "Step limit reached" : "Collision"),
     tracePath: trace.path, modelUsage: models?.usage };
   if (terminal.enabled) terminal.report({ type: "terminal.result", detail: summary });
@@ -99,7 +94,6 @@ try {
   if (!interrupted) { terminal.report({ type: "terminal.error", detail: { message: String(error) } }); throw error; }
 } finally {
   try {
-    await session?.finish();
     process.removeListener("SIGINT", stop);
     await world.close();
   } finally { terminal.close(); }
