@@ -6,7 +6,9 @@ import { PacmanSession } from "./session.js";
 const holdMs = Number(learningArgument("hold-ms") ?? 220);
 if (!Number.isSafeInteger(holdMs) || holdMs < 1 || holdMs > 2000) throw new Error("Invalid --hold-ms");
 const world = new PacmanSession(holdMs);
-await runResearchCli(learningPacman(world), {
+const game = learningPacman(world);
+game.requestedGoal = learningArgument("goal");
+await runResearchCli(game, {
   async open({ headless, log, onClose }) {
     world.onClose = onClose;
     await world.open(headless);

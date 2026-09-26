@@ -13,7 +13,7 @@ export async function resolveGameGoal<State, Action>(game: LearningGame<State, A
   if (!game.requestedGoal) return;
   const options = game.goalOptions;
   if (!options || !Object.keys(options).length) throw new Error(`Game ${game.id} does not expose evaluators for custom goals`);
-  let selection = saved?.option;
+  let selection = saved?.option ?? (Object.hasOwn(options, game.requestedGoal) ? game.requestedGoal : undefined);
   let efficiency = saved?.efficiency ?? "steps";
   if (saved && saved.request !== game.requestedGoal) throw new Error("Saved evaluation does not match the requested goal");
   if (!selection) {
