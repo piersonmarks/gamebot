@@ -8,15 +8,21 @@ export const evaluationSchema = z.object({
 export type GoalEvaluation = z.infer<typeof evaluationSchema>;
 
 /** Interpret intent against game-owned evaluators once. The editable player cannot change the scoring contract. */
-export async function resolveGameGoal<State, Action>(game: LearningGame<State, Action>, models: PlayerModelRunner,
+export async function resolveGameGoal<State, Action>(game: LearningGame<State, Action>, models: Pick<PlayerModelRunner, "ask" | "report"> | undefined,
   signal: AbortSignal, saved?: GoalEvaluation): Promise<void> {
-  if (!game.requestedGoal) return;
+  if (game.requestedGoal === undefined) return;
+  if (!game.requestedGoal.trim()) throw new Error("--goal must not be empty");
   const options = game.goalOptions;
   if (!options || !Object.keys(options).length) throw new Error(`Game ${game.id} does not expose evaluators for custom goals`);
-  let selection = saved?.option ?? (Object.hasOwn(options, game.requestedGoal) ? game.requestedGoal : undefined);
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+  const requested = normalize(game.requestedGoal);
+  const direct = Object.entries(options).find(([id, option]) =>
+    [id, ...(option.aliases ?? [])].some(name => normalize(name) === requested))?.[0];
+  let selection = saved?.option ?? direct;
   let efficiency = saved?.efficiency ?? "steps";
   if (saved && saved.request !== game.requestedGoal) throw new Error("Saved evaluation does not match the requested goal");
   if (!selection) {
+    if (!models) throw new Error(`Goal ${JSON.stringify(game.requestedGoal)} needs model interpretation; choose a supported goal name or enable AI`);
     const result = await models.ask("strategist", z.object({
       option: z.enum(Object.keys(options) as [string, ...string[]]), supported: z.boolean(), explanation: z.string(), efficiency: z.enum(["steps", "model-calls"]),
     }), `Map the authoritative user goal to one of the game's fixed evaluators. This is goal interpretation, not strategy design.
@@ -38,5 +44,5 @@ score means maximize measured score. Set efficiency to model-calls when the user
   game.goal = { id: selection, description: game.requestedGoal };
   game.outcome = option.outcome;
   game.evaluation = evaluation;
-  await models.report?.({ type: "goal.resolved", detail: { goal: game.goal, evaluation } });
+  await models?.report?.({ type: "goal.resolved", detail: { goal: game.goal, evaluation } });
 }

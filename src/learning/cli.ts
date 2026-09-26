@@ -67,8 +67,9 @@ export async function runResearchCli<State, Action>(game: LearningGame<State, Ac
     const models = new PlayerModelRunner(playerModelsFromEnv(), Number(learningArgument("max-calls") ?? saved?.maxCalls ?? 10000), report);
     const setupEvents: LearningEvent[] = [];
     models.report = async event => { setupEvents.push(event); await report(event); };
-    if (learningArgument("goal") !== undefined && !game.goalOptions && !game.requestedGoal) game.requestedGoal = learningArgument("goal");
-    if ((saved?.identity?.evaluation ?? saved?.evaluation) && learningArgument("goal") === undefined && !game.requestedGoal && JSON.stringify(game.goal) !== JSON.stringify(saved.identity?.goal ?? saved.goal)) game.requestedGoal = (saved.identity?.evaluation ?? saved.evaluation).request;
+    const requestedGoal = learningArgument("goal");
+    if (requestedGoal !== undefined && game.evaluation?.request !== requestedGoal) game.requestedGoal = requestedGoal;
+    if ((saved?.identity?.evaluation ?? saved?.evaluation) && requestedGoal === undefined && !game.requestedGoal && JSON.stringify(game.goal) !== JSON.stringify(saved.identity?.goal ?? saved.goal)) game.requestedGoal = (saved.identity?.evaluation ?? saved.evaluation).request;
     await resolveGameGoal(game, models, controller.signal, saved?.identity?.evaluation ?? saved?.evaluation);
     models.report = report;
     let policy = selection === undefined ? undefined : await loadPlayer(selection, game);

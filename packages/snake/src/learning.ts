@@ -5,9 +5,14 @@ import type { SnakeSession } from "./session.js";
 
 export function learningSnake(session: SnakeSession): LearningGame<SnakeState, Direction> {
   const { tickIntervalMs } = session;
+  const outcome = (state: SnakeState) => {
+    const won = state.alive && state.body.length === state.width * state.height;
+    return { done: !state.alive || won, won, score: state.foodEaten };
+  };
   return {
     id: "snake", version: "independent-v1", realtime: true,
     goal: { id: "fill-board", description: "Grow as long as possible without colliding; fill the board to win" },
+    goalOptions: { "fill-board": { objective: "achievement", aliases: ["win"], description: "Fill the board without colliding", outcome } },
     rules: `Snake moves on a width by height grid. Coordinates start at the top-left; x increases right, y increases down.
 State includes body (head first), direction, food {x,y}, alive, foodEaten, tick and a text board.
 The first direction input starts the game. After that, Snake advances one cell every ${tickIntervalMs} milliseconds of real time,
@@ -23,9 +28,6 @@ The game ends only on collision or when the board is full. Filling the board win
       .map(direction => ({ id: direction, action: direction, description: `Move ${direction}` })) },
     verifier: { verify: ({ after, executionError }) => executionError ? { status: "failure", reason: String(executionError) }
       : !after.state.alive ? { status: "failure", reason: "collision" } : { status: "success" } },
-    outcome: state => {
-      const won = state.alive && state.body.length === state.width * state.height;
-      return { done: !state.alive || won, won, score: state.foodEaten };
-    },
+    outcome,
   };
 }

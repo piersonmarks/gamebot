@@ -113,7 +113,7 @@ export class ContinualLearningSession<State, Action> {
       Object.assign(models.usage, this.checkpoint.usage);
       this.checkpoint.usage = models.usage;
       if (models.maxCalls < models.usage.calls) throw new Error("--max-calls cannot be below calls already spent");
-      // Old scheduled/interrupt-created requests remain evidence, not permission to call Astra.
+      // Old scheduled/interrupt-created requests remain evidence, not permission to call Sol.
       if (this.checkpoint.pending && !this.checkpoint.pending.requestedBy) {
         this.checkpoint.history.push({ ...this.checkpoint.pending.feedback, unappliedProposal: this.checkpoint.pending.proposal });
         this.checkpoint.pending = undefined;
@@ -270,7 +270,7 @@ export class ContinualLearningSession<State, Action> {
       await this.emit("episode.step", transition);
       await this.recordOutcome(observation.state);
       signal.throwIfAborted();
-      // Every outcome reaches the cheap observer. Only its model-authored conditions may wake Sol.
+      // Every outcome reaches the cheap observer. Only its model-authored conditions may wake Luna.
       await this.superviseObservation(outcome.done ? outcome.won ? "won" : "game-over"
         : !result.candidate ? "blocked" : "outcome", result.verification,
         result.verification?.status === "unknown" || result.verification?.status === "failure"

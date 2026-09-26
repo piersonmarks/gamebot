@@ -11,12 +11,12 @@ export function learning2048(create: LearningGame<Game2048State, Direction>["cre
     throw new Error("--target must be a power of two from 2 to 2048");
   }
   const goals = {
-    "reach-tile": { objective: "achievement" as const, description: `Reach a ${target} tile; success first, then partial progress by largest tile and score`,
+    "reach-tile": { objective: "achievement" as const, aliases: ["win"], description: `Reach a ${target} tile; success first, then partial progress by largest tile and score`,
       outcome(state: Game2048State) {
         const maxTile = Math.max(...state.board.flat());
         return { done: state.over || maxTile >= target, won: maxTile >= target, score: Math.log2(maxTile) + state.score / 1000000 };
       } },
-    "maximize-score": { objective: "score" as const, description: "Maximize final score; continue beyond 2048 until game over or the turn limit",
+    "maximize-score": { objective: "score" as const, aliases: ["maximize score", "maximise score", "max score"], description: "Maximize final score; continue beyond 2048 until game over or the turn limit",
       outcome: (state: Game2048State) => ({ done: state.over, won: false, score: state.score }) },
   };
   const option = maximizeScore ? "maximize-score" : "reach-tile";

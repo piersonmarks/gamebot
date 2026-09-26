@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { FileTraceSink, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv, runOrdinaryGame,
-  createLearningTerminal, loadPlayer, learningArgument, type LearningEvent, type SessionOptions,
+  createLearningTerminal, loadPlayer, learningArgument, resolveGameGoal, type LearningEvent, type SessionOptions,
   type SessionRuntime, type ContinualLearningSession } from "@gamebot/core";
 import { builtinDirection, type PacmanState, type Direction } from "./game.js";
 import { learningPacman } from "./learning.js";
@@ -24,8 +24,12 @@ const definition = learningPacman(world);
 const selection = learningArgument("policy");
 if (selection !== undefined && process.argv.includes("--ai")) throw new Error("Use either --ai or --policy");
 const builtin = selection === "builtin";
-const policy = selection === undefined || builtin ? undefined : await loadPlayer(selection, definition);
 const modelConfig = builtin ? undefined : playerModelsFromEnv();
+const setupEvents: LearningEvent[] = [];
+const models = modelConfig ? new PlayerModelRunner(modelConfig, maxCalls, event => { setupEvents.push(event); }) : undefined;
+definition.requestedGoal = learningArgument("goal");
+await resolveGameGoal(definition, models, new AbortController().signal);
+const policy = selection === undefined || builtin ? undefined : await loadPlayer(selection, definition);
 const watch = process.argv.includes("--watch");
 const verbose = process.argv.includes("--verbose");
 const headless = process.argv.includes("--headless");
@@ -40,7 +44,6 @@ const report = async (event: LearningEvent) => {
   if (terminal.enabled) terminal.report(event);
   else if (verbose || event.type === "learning.created" || event.type === "learning.saved") console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
 };
-const models = modelConfig ? new PlayerModelRunner(modelConfig, maxCalls, report) : undefined;
 const sessionOptions: SessionOptions<PacmanState, Direction> = {
   adapter: game, candidates: definition.candidates, verifier: definition.verifier,
   reflex: builtin ? {
@@ -55,6 +58,8 @@ let resolveStop!: () => void;
 const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
 const terminal = createLearningTerminal({ game: "pacman", mode: "game", goal: definition.goal.description, verbose });
 terminal.report({ type: "terminal.trace", detail: { tracePath: trace.path } });
+for (const event of setupEvents) await report(event);
+if (models) models.report = report;
 const controller = new AbortController();
 const stop = () => { terminal.report({ type: "terminal.stopping", detail: {} }); interrupted = true; controller.abort(); resolveStop(); };
 world.onClose = stop;

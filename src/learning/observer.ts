@@ -29,6 +29,6 @@ detail may contain candidates/programProposal before an action, or reason/error/
 Handle missing optional fields and empty recent arrays, terminal observations and legacy/reconnected sessions.
 The interpreter is fresh on every call: no persistent globals, imports, filesystem, network, clock, or random APIs.
 Execution is limited to 100 ms, 32 MiB and 131072 JSON output characters. Invalid programs stop play without an automatic model fallback.
-Astra supplies the initial observer. Tactical responses return observer=null to keep the current source, or supply new source to change it.
+Sol supplies the initial observer. Tactical responses return observer=null to keep the current source, or supply new source to change it.
 When no observer exists, source is required; null cannot initialize monitoring.
 This is monitoring code, not a game solver. Jev remains responsible only for its typed judgments.`;

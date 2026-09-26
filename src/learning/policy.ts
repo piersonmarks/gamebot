@@ -17,7 +17,7 @@ export interface LearningGame<State, Action> {
   requestedGoal?: string;
   /** The world advances during inference: supervise concurrently and never add presentation delays to control. */
   realtime?: boolean;
-  goalOptions?: Record<string, { description: string; objective: "achievement" | "score";
+  goalOptions?: Record<string, { description: string; objective: "achievement" | "score"; aliases?: readonly string[];
     outcome(state: State): { done: boolean; won: boolean; score: number } }>;
 
   /** Persistent worlds are never recreated automatically at a learning checkpoint or terminal event. */

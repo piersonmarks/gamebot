@@ -20,7 +20,7 @@ Gamebot
 │   ├── Deterministic skills may continue without reflex calls
 │   ├── Reflex initially selects only offered candidates
 │   ├── Tactician and strategist are optional and usually dormant
-│   ├── Model-authored observation conditions wake Sol for strategy or learning decisions
+│   ├── Model-authored observation conditions wake Luna for strategy or learning decisions
 │   └── Tool calls gather evidence; proposals use the same activation path
 ├── Skills
 │   ├── Agent Skills SKILL.md is the discovery/instruction format
@@ -59,6 +59,6 @@ Each game bridge owns an initially empty `tools/` area for reviewed game-specifi
 
 ## AI-first research extension
 
-The 2048, Snake, and Pac-Man runners use a shared three-tier player. The strategist establishes the initial approach and delegation before play; the tactician maintains a separate immediate objective; the reflex/JEV role chooses legal candidates through AI, generated code, or explicit hybrid delegation. A model-authored observer watches decisions and outcomes without inference. It wakes Sol on model-defined conditions; Sol decides whether to continue, involve Astra, or request a learning revision. Jev only answers judgments. Game signals and terminal outcomes provide evidence; the harness has no automatic review intervals or timers. These runners await model-requested reviews; the existing asynchronous reasoner interface remains available for other integrations.
+The 2048, Snake, and Pac-Man runners use a shared three-tier player. The strategist establishes the initial approach and delegation before play; the tactician maintains a separate immediate objective; the reflex/JEV role chooses legal candidates through AI, generated code, or explicit hybrid delegation. A model-authored observer watches decisions and outcomes without inference. It wakes Luna on model-defined conditions; Luna decides whether to continue, involve Sol, or request a learning revision. Jev only answers judgments. Game signals and terminal outcomes provide evidence; the harness has no automatic review intervals or timers. These runners await model-requested reviews; the existing asynchronous reasoner interface remains available for other integrations.
 
 Research evaluates whole player artifacts, including prompts and executable programs. The strongest configured model diagnoses sampled gameplay and proposes alternatives, with prior experiment findings retained across runs. Rules, goals, legality, execution limits and success evaluation belong to the harness and game package. Code runs in QuickJS rather than the host process. Fresh training/validation comparisons and a final audit gate publication. Ordinary play is AI-first and requires explicit `--policy` selection to load saved research. See [the learning guide](learning.md) for the implemented interface and limits.

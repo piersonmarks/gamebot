@@ -41,7 +41,7 @@ export interface PlayerControllerState<State> {
   recent: unknown[];
 }
 
-/** A model-authored observer gates Sol; Jev answers judgments, never routes escalation. */
+/** A model-authored observer gates the tactician; Jev answers judgments, never routes escalation. */
 export class HierarchicalPlayer<State, Action> implements Reflex<State, Action> {
   private policy?: PlayerPolicy;
   private strategy?: string;

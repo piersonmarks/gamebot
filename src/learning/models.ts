@@ -13,8 +13,8 @@ export type PlayerModels = {
 };
 /** Pinned Gateway defaults; environment overrides remain authoritative. */
 export const defaultPlayerModels = {
-  strategist: "openai/gpt-6-astra",
-  tactician: "openai/gpt-6-sol",
+  strategist: "openai/gpt-6-sol",
+  tactician: "openai/gpt-6-luna",
   reflex: "typesafe-ai/jev",
 } as const;
 export type LearningEvent = { type: string; detail: unknown };
