@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { FileTraceSink, HierarchicalPlayer, PlayerModelRunner, playerModelsFromEnv, runOrdinaryGame,
-  createLearningTerminal, loadPlayer, learningArgument, openGameWindow, type LearningEvent, type SessionOptions,
+  createLearningTerminal, loadPlayer, learningArgument, type LearningEvent, type SessionOptions,
   type SessionRuntime, type ContinualLearningSession } from "@gamebot/core";
 import { builtinDirection, type PacmanState, type Direction } from "./game.js";
 import { learningPacman } from "./learning.js";
@@ -13,13 +13,13 @@ if (process.argv.some(arg => /^--learn-(every|ms)(=|$)/.test(arg))) {
 }
 const seed = Number(learningArgument("seed") ?? 1);
 const turns = Number(learningArgument("turns") ?? learningArgument("steps") ?? 5000);
-const pace = Number(learningArgument("pace") ?? 140);
+const holdMs = Number(learningArgument("hold-ms") ?? 220);
 const maxCalls = Number(learningArgument("max-calls") ?? 10000);
 if (!Number.isSafeInteger(seed) || !Number.isSafeInteger(turns) || turns < 1 ||
-    !Number.isSafeInteger(pace) || pace < 1 || !Number.isSafeInteger(maxCalls) || maxCalls < 1) {
-  throw new Error("Invalid --seed, --turns, --pace or --max-calls");
+    !Number.isSafeInteger(holdMs) || holdMs < 1 || holdMs > 2000 || !Number.isSafeInteger(maxCalls) || maxCalls < 1) {
+  throw new Error("Invalid --seed, --turns, --hold-ms or --max-calls");
 }
-const world = new PacmanSession(pace);
+const world = new PacmanSession(holdMs);
 const definition = learningPacman(world);
 const selection = learningArgument("policy");
 if (selection !== undefined && process.argv.includes("--ai")) throw new Error("Use either --ai or --policy");
@@ -37,7 +37,6 @@ let steps = 0;
 const report = async (event: LearningEvent) => {
   await trace.record({ sequence: steps + 1, time: new Date().toISOString(), type: event.type,
     authority: session?.getAuthority() ?? { goal: definition.goal, goalRevision: 1, directiveRevision: 0 }, detail: event.detail });
-  world.report(event);
   if (terminal.enabled) terminal.report(event);
   else if (verbose || event.type === "learning.created" || event.type === "learning.saved") console.log(`[${event.type}] ${JSON.stringify(event.detail)}`);
 };
@@ -63,7 +62,6 @@ process.once("SIGINT", stop);
 try {
   if (!headless) {
     terminal.log(`Watch Pac-Man at ${world.url}. Arrow keys also control the game. Ctrl+C closes it.`);
-    openGameWindow(world.url!, terminal.log);
   }
   terminal.start();
   await runOrdinaryGame({ game: definition, adapter: game, session: sessionOptions,
@@ -76,10 +74,10 @@ try {
       terminal.report({ type: "terminal.player", detail: { source: builtin ? "heuristic" : policy?.kind ?? "Jev" } });
       terminal.log(`Player: ${builtin ? "explicit heuristic" : `strategist → tactician → reflex/JEV (${policy?.kind ?? "initial AI"})`}.`);
     },
-    reportEpisode: event => { world.report(event); if (terminal.enabled) terminal.report(event); },
+    reportEpisode: event => { if (terminal.enabled) terminal.report(event); },
     afterStep(_result, state, count) {
       steps = count;
-      if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; pellets ${state.pelletsRemaining}; lives ${state.lives}\n${state.board}\n`);
+      if (watch && !terminal.enabled) console.log(`Tick ${state.tick}; pellets ${state.pelletsRemaining}; lives ${state.lives}\n${state.terrain.join("\n")}\n`);
     },
   });
   const state = (await game.observe()).state;

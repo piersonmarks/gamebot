@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-import { learningArgument, runResearchCli, openGameWindow } from "@gamebot/core";
+import { learningArgument, runResearchCli } from "@gamebot/core";
 import { learningPacman } from "./learning.js";
 import { PacmanSession } from "./session.js";
 
-const world = new PacmanSession(Number(learningArgument("pace") ?? 140));
+const holdMs = Number(learningArgument("hold-ms") ?? 220);
+if (!Number.isSafeInteger(holdMs) || holdMs < 1 || holdMs > 2000) throw new Error("Invalid --hold-ms");
+const world = new PacmanSession(holdMs);
 await runResearchCli(learningPacman(world), {
   async open({ headless, log, onClose }) {
     world.onClose = onClose;
     await world.open(headless);
-    if (!headless) {
-      log(`Watch Pac-Man at ${world.url}. Arrow keys also control the game.`);
-      openGameWindow(world.url!, log);
-    }
-    return { report: event => world.report(event), close: () => world.close() };
+    if (!headless) log(`Watch Pac-Man at ${world.url}. Arrow keys also control the game.`);
+    return { close: () => world.close() };
   },
 });

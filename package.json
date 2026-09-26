@@ -2,7 +2,7 @@
   "name": "@gamebot/core",
   "version": "0.1.0",
   "private": true,
-  "workspaces": ["packages/browser", "packages/pacman-game", "packages/snake-game", "packages/*"],
+  "workspaces": ["packages/browser", "packages/snake-game", "packages/*"],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
